@@ -1,0 +1,33 @@
+name: stochastic_models
+description: Stochastic modeling, simulation, queueing, uncertainty analysis, and random processes in IE/OR.
+typical_models:
+  - queueing models
+  - Monte Carlo simulation
+  - Markov chains
+  - stochastic programming
+algorithm_families:
+  - discrete-event simulation
+  - sample average approximation
+  - variance reduction
+  - scenario analysis
+benchmarks:
+  - synthetic arrival and service processes
+  - demand scenarios
+metrics:
+  - expected cost
+  - waiting time
+  - confidence interval
+  - service level
+sensitivity_parameters:
+  - arrival rate
+  - service rate
+  - variance
+  - number of scenarios
+literature_keywords:
+  - stochastic modeling
+  - queueing
+  - simulation optimization
+human_checks:
+  - verify independence assumptions
+  - report confidence intervals
+

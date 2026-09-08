@@ -1,0 +1,33 @@
+name: soft_computing
+description: Fuzzy systems, neural methods, evolutionary computation, and hybrid soft-computing approaches.
+typical_models:
+  - fuzzy inference
+  - neural prediction model
+  - genetic algorithm
+  - particle swarm optimization
+algorithm_families:
+  - fuzzy rule base
+  - GA / PSO
+  - neural networks
+  - hybrid heuristic optimization
+benchmarks:
+  - synthetic nonlinear response surfaces
+  - small industrial prediction datasets
+metrics:
+  - objective value
+  - prediction error
+  - convergence speed
+  - robustness
+sensitivity_parameters:
+  - population size
+  - mutation rate
+  - fuzzy membership shape
+  - noise level
+literature_keywords:
+  - soft computing
+  - fuzzy optimization
+  - evolutionary algorithm
+human_checks:
+  - avoid opaque claims without explainability
+  - compare against simple baselines
+

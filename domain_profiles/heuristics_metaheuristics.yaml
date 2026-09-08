@@ -1,0 +1,33 @@
+name: heuristics_metaheuristics
+description: Heuristic and metaheuristic algorithms for combinatorial and continuous OR problems.
+typical_models:
+  - combinatorial optimization
+  - local search neighborhood model
+  - constructive heuristic model
+algorithm_families:
+  - greedy heuristic
+  - local search
+  - simulated annealing
+  - tabu search
+  - genetic algorithm
+benchmarks:
+  - binary selection benchmarks
+  - assignment
+  - routing benchmark families
+metrics:
+  - objective gap
+  - runtime
+  - convergence curve
+  - feasible-solution rate
+sensitivity_parameters:
+  - problem size
+  - random seed
+  - temperature schedule
+  - population size
+literature_keywords:
+  - metaheuristic
+  - local search
+  - simulated annealing
+human_checks:
+  - compare to exact small-instance baseline
+  - report multiple seeds

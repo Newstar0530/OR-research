@@ -1,0 +1,31 @@
+name: ai_for_ie
+description: Applications of AI and machine learning in industrial engineering and management.
+typical_models:
+  - predictive model
+  - reinforcement learning policy
+  - anomaly detection
+  - decision support model
+algorithm_families:
+  - supervised learning baselines
+  - tree models
+  - neural networks
+  - reinforcement learning
+benchmarks:
+  - synthetic tabular operational data
+  - process monitoring benchmark families
+metrics:
+  - prediction error
+  - decision cost
+  - robustness
+  - inference time
+sensitivity_parameters:
+  - training size
+  - noise level
+  - feature drift
+literature_keywords:
+  - industrial AI
+  - machine learning in manufacturing
+  - predictive maintenance
+human_checks:
+  - avoid data leakage
+  - compare against operational baselines

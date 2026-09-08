@@ -1,0 +1,32 @@
+name: decision_analysis
+description: Decision analysis and multi-criteria decision making for industrial engineering and management.
+typical_models:
+  - AHP
+  - TOPSIS
+  - utility models
+  - multi-criteria scoring
+algorithm_families:
+  - weighted scoring
+  - pairwise comparison
+  - sensitivity analysis
+  - ranking robustness
+benchmarks:
+  - synthetic alternatives and criteria
+  - expert preference matrices
+metrics:
+  - ranking stability
+  - consistency ratio
+  - utility score
+sensitivity_parameters:
+  - criteria weights
+  - preference noise
+  - normalization method
+literature_keywords:
+  - decision analysis
+  - MCDM
+  - AHP
+  - TOPSIS
+human_checks:
+  - verify criteria independence
+  - verify stakeholder interpretation
+

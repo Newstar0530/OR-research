@@ -1,0 +1,2 @@
+"""Research automation assistant package."""
+

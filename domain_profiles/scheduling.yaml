@@ -1,0 +1,35 @@
+name: scheduling
+description: Scheduling research for machines, jobs, due dates, disruptions, and dispatching or optimization policies.
+typical_models:
+  - single-machine scheduling
+  - flow shop / job shop scheduling
+  - MILP scheduling models
+  - robust scheduling
+algorithm_families:
+  - dispatching rules
+  - MILP baseline
+  - local search
+  - simulated annealing
+  - genetic algorithms
+benchmarks:
+  - synthetic processing times and due dates
+  - Taillard-style flow shop instances
+metrics:
+  - makespan
+  - total tardiness
+  - machine utilization
+  - runtime
+sensitivity_parameters:
+  - number of jobs
+  - due-date tightness
+  - processing-time variability
+  - machine breakdown probability
+literature_keywords:
+  - scheduling
+  - job shop
+  - flow shop
+  - tardiness
+human_checks:
+  - verify non-overlap constraints
+  - verify due-date and release-time assumptions
+

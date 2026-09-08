@@ -1,0 +1,34 @@
+name: inventory
+description: Inventory and supply systems, including replenishment policies, demand uncertainty, and service levels.
+typical_models:
+  - EOQ
+  - newsvendor
+  - base-stock policy
+  - periodic review inventory
+  - stochastic inventory simulation
+algorithm_families:
+  - closed-form baseline
+  - simulation optimization
+  - grid search
+  - stochastic approximation
+benchmarks:
+  - synthetic demand distributions
+  - service-level target scenarios
+metrics:
+  - total cost
+  - holding cost
+  - shortage cost
+  - service level
+sensitivity_parameters:
+  - demand variance
+  - holding cost
+  - shortage cost
+  - lead time
+literature_keywords:
+  - inventory optimization
+  - newsvendor
+  - stochastic inventory
+human_checks:
+  - verify demand distribution assumptions
+  - verify service-level definition
+

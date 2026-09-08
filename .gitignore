@@ -1,0 +1,54 @@
+# --- Python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# --- Testing ----------------------------------------------------------------
+.pytest_cache/
+.tmp-pytest*/
+.coverage
+htmlcov/
+
+# --- Secrets: never commit real credentials ---------------------------------
+.env
+.env.local
+*.key
+*.pem
+
+# --- Research run artifacts -------------------------------------------------
+# Each run writes ~90 inspectable files to runs/<timestamp>_<project>/.
+# Those are outputs, not sources -- regenerate them with:
+#   python -m src.main run --config configs/binary_program.yaml
+# runs/paper_notes/ also holds third-party papers, which must not be
+# redistributed from a public repository.
+runs/
+
+# Cross-run memory is local run history, not source.
+research_memory/
+
+# Local benchmark and instance data (paths are per machine).
+data/input/*
+data/output/*
+!data/input/.gitkeep
+!data/output/.gitkeep
+
+# One-off snapshot taken before the solver layer was added; git supersedes it.
+_backup_before_solver_layer/
+
+# Where the Claude desktop app drops delivered files, and the one-file git
+# bundle used to seed this history. Neither is project source.
+Claude outputs/
+*.bundle
+setup_git_and_push.ps1
+
+# --- OS / editor ------------------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

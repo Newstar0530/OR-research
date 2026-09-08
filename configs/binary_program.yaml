@@ -1,0 +1,56 @@
+# Solver-backed MI 0-1 binary programming study.
+#
+# Unlike configs/default.yaml, this run actually solves optimization problems:
+# instances are generated reproducibly, a PROVED optimum is established where
+# possible, every returned solution is independently verified against the
+# constraints, and the node metric is the proposed heuristic's relative gap to
+# that proved optimum.
+project_name: binary_program_mi01_study
+research_goal: >-
+  Quantify how far a restart-augmented local search stays from the proved optimum
+  of multidimensional 0-1 knapsack instances as the number of binary variables and
+  the profit-weight correlation increase, using an exact CP-SAT reference and
+  independent feasibility verification.
+domain: "Industrial Engineering / Operations Research"
+research_domain_mode: "auto"
+project_plugin: "auto"
+
+# Pin the solver-backed experiment instead of the synthetic scaffold.
+experiment_template: "binary_program"
+template_path:
+
+output_dir: "runs"
+max_ideas: 3
+max_experiments: 3
+max_debug_attempts: 2
+
+# Real solving needs a real budget: 45 instances x 3 methods per node.
+solver_timeout_seconds: 900
+
+llm_provider: "mock"
+model_name: "mock-ie-or"
+use_mock_llm: true
+
+enable_novelty_check: true
+enable_report_generation: true
+literature_dir:
+benchmark_dir:
+enable_llm_agent_runtime: true
+enable_autonomous_loop: true
+max_research_iterations: 2
+max_candidate_branches: 3
+autonomous_patience: 2
+min_metric_improvement: 0.0
+
+# The node metric is the PROPOSED method's distance from the proved optimum.
+# Measuring "whichever method did best" would just measure the exact solver.
+primary_metric: "gap_to_known_optimum"
+objective_direction: "minimize"
+primary_metric_method: "local_search"
+baseline_method: "greedy"
+proposed_method: "local_search"
+
+code_editing_backend: "deterministic"
+aider_command: "aider"
+aider_model:
+aider_timeout_seconds: 120

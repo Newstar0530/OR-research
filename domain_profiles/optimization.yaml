@@ -1,0 +1,32 @@
+name: optimization
+description: General mathematical optimization research, including LP, MILP, nonlinear optimization, robust optimization, and decomposition.
+typical_models:
+  - LP / MILP / MINLP
+  - robust optimization
+  - stochastic programming
+  - decomposition and relaxation models
+algorithm_families:
+  - exact solvers
+  - branch and bound
+  - Benders decomposition
+  - Lagrangian relaxation
+  - greedy and local search baselines
+benchmarks:
+  - synthetic bounded LP/MILP instances
+  - small canonical OR benchmark families
+metrics:
+  - objective value
+  - optimality gap
+  - runtime
+  - feasibility residual
+sensitivity_parameters:
+  - problem size
+  - constraint tightness
+  - uncertainty budget
+literature_keywords:
+  - mathematical optimization
+  - mixed integer programming
+  - robust optimization
+human_checks:
+  - verify objective direction and units
+  - verify feasibility and boundedness

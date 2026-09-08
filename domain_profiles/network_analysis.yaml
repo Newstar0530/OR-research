@@ -1,0 +1,33 @@
+name: network_analysis
+description: Network and graph analysis for flow, centrality, resilience, routing, and industrial network structure.
+typical_models:
+  - shortest path
+  - max flow / min cost flow
+  - centrality analysis
+  - network interdiction
+algorithm_families:
+  - Dijkstra / Bellman-Ford
+  - max-flow algorithms
+  - greedy interdiction
+  - simulation on random graphs
+benchmarks:
+  - random graphs
+  - grid networks
+  - small supply network instances
+metrics:
+  - path cost
+  - flow value
+  - centrality score
+  - resilience loss
+sensitivity_parameters:
+  - edge density
+  - demand level
+  - disruption probability
+literature_keywords:
+  - network analysis
+  - graph optimization
+  - network flow
+human_checks:
+  - verify graph directionality
+  - verify connectivity assumptions
+

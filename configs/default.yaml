@@ -1,0 +1,30 @@
+project_name: generic_or_research_run
+research_goal: "Develop and evaluate a reproducible operations research method with explicit baselines and sensitivity analysis."
+domain: "Industrial Engineering / Operations Research"
+research_domain_mode: "auto"
+project_plugin: "auto"
+template_path:
+output_dir: "runs"
+max_ideas: 3
+max_experiments: 3
+max_debug_attempts: 2
+solver_timeout_seconds: 30
+llm_provider: "mock"
+model_name: "mock-ie-or"
+use_mock_llm: true
+enable_novelty_check: true
+enable_report_generation: true
+literature_dir:
+benchmark_dir:
+enable_llm_agent_runtime: true
+enable_autonomous_loop: true
+max_research_iterations: 2
+max_candidate_branches: 3
+autonomous_patience: 2
+min_metric_improvement: 0.0
+primary_metric: "objective"
+objective_direction: "minimize"
+code_editing_backend: "deterministic"
+aider_command: "aider"
+aider_model:
+aider_timeout_seconds: 120
