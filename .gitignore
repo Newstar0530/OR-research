@@ -46,6 +46,21 @@ _backup_before_solver_layer/
 Claude outputs/
 *.bundle
 setup_git_and_push.ps1
+COMMIT_MESSAGE.txt
+COMMIT_MESSAGE_ALL_THREE.txt
+COMMIT_MESSAGE_ALL.txt
+PUSH_INSTRUCTIONS.md
+CLEANUP.ps1
+
+# --- Third-party documents --------------------------------------------------
+# Literature PDFs and papers must never be redistributed from a public repo.
+# runs/ already covers runs/paper_notes/, but a paper dropped anywhere else
+# would otherwise be picked up by `git add .`. Use `git add -f` for the rare
+# figure or document that genuinely belongs in the repository.
+*.pdf
+*.docx
+*.doc
+*.pptx
 
 # --- OS / editor ------------------------------------------------------------
 .DS_Store

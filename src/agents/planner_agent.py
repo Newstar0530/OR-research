@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from src.llm_client import LLMClient
+from src.llm_errors import LLMCallError
 from src.schemas import ResearchIdea
 
 
@@ -24,6 +25,9 @@ class PlannerAgent:
                 branches = [str(item) for item in payload.get("branches", [])]
                 if branches:
                     return branches[:max_branches]
+            except LLMCallError as error:
+                if error.is_permanent:
+                    raise
             except Exception:
                 pass
         defaults = [

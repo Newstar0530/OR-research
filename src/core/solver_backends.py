@@ -868,10 +868,6 @@ def build_method_specs(
 METHOD_SPECS: dict[str, MethodSpec] = build_method_specs()
 
 
-def list_methods() -> list[str]:
-    return list(METHOD_SPECS)
-
-
 def available_methods(specs: dict[str, MethodSpec] | None = None) -> dict[str, tuple[bool, str]]:
     """`{method: (available, reason_if_not)}` for the current machine."""
 

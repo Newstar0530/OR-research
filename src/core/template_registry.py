@@ -66,6 +66,30 @@ def build_template_registry(project_root: Path) -> Registry[TemplateSpec]:
         ),
     )
     registry.register(
+        "bilevel_transformation",
+        TemplateSpec(
+            key="bilevel_transformation",
+            path=template_dir / "bilevel_transformation_template.py",
+            problem_families=["bilevel_programming", "transformation_verification"],
+            description=(
+                "Verifies that the bilevel -> KKT -> MI 0-1 chain preserves the optimum, against "
+                "an oracle that uses neither KKT nor Big-M, and locates the Big-M threshold."
+            ),
+        ),
+    )
+    registry.register(
+        "qubo_transformation",
+        TemplateSpec(
+            key="qubo_transformation",
+            path=template_dir / "qubo_transformation_template.py",
+            problem_families=["qubo", "quantum_optimization"],
+            description=(
+                "Checks that the QUBO encoding preserves the optimum, separating the cost of "
+                "discretisation from the correctness of the penalty, and reports the bit cost."
+            ),
+        ),
+    )
+    registry.register(
         "stochastic_models",
         TemplateSpec(
             key="stochastic_models",

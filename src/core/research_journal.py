@@ -21,6 +21,58 @@ class ResearchJournal(BaseModel):
                 best = node
         return best
 
+    # -- tree queries ------------------------------------------------------
+    #
+    # The journal stores a flat list, but the nodes form a forest through
+    # `parent_id`. The search policy asks structural questions of it -- how many
+    # roots exist, which leaves are broken -- so those questions belong here
+    # rather than being re-derived by every caller.
+
+    def node_by_id(self, node_id: str) -> ResearchNode | None:
+        for node in self.nodes:
+            if node.id == node_id:
+                return node
+        return None
+
+    def roots(self) -> list[ResearchNode]:
+        """Nodes with no parent: the independent drafts."""
+
+        return [node for node in self.nodes if node.parent_id is None]
+
+    def children_of(self, node_id: str) -> list[ResearchNode]:
+        return [node for node in self.nodes if node.parent_id == node_id]
+
+    def leaves(self) -> list[ResearchNode]:
+        """Nodes nothing has been expanded from yet."""
+
+        expanded = {node.parent_id for node in self.nodes if node.parent_id}
+        return [node for node in self.nodes if node.id not in expanded]
+
+    def buggy_leaves(self) -> list[ResearchNode]:
+        """Failed leaves: the only failures a repair step can usefully target.
+
+        A failure that already has a child has been acted on. Repairing it again
+        would fork a second attempt from the same broken state.
+        """
+
+        return [node for node in self.leaves() if node.is_buggy]
+
+    def successful_nodes(self) -> list[ResearchNode]:
+        return [node for node in self.nodes if node.is_successful]
+
+    def depth_of(self, node_id: str) -> int:
+        """Edges from this node up to its root. Cycles cannot occur, but a
+        malformed journal is treated as terminating rather than hanging."""
+
+        depth = 0
+        seen: set[str] = set()
+        current = self.node_by_id(node_id)
+        while current is not None and current.parent_id and current.parent_id not in seen:
+            seen.add(current.id)
+            depth += 1
+            current = self.node_by_id(current.parent_id)
+        return depth
+
     def nodes_for_iteration(self, iteration: int) -> list[ResearchNode]:
         return [node for node in self.nodes if node.iteration == iteration]
 

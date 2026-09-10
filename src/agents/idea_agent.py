@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from src.llm_client import LLMClient
+from src.llm_errors import LLMCallError
 from src.schemas import IdeaArchive, ResearchIdea
 
 
@@ -8,7 +9,22 @@ class IdeaAgent:
     def __init__(self, llm: LLMClient) -> None:
         self.llm = llm
 
-    def run(self, research_goal: str, domain: str, max_ideas: int = 3, background_text: str = "") -> IdeaArchive:
+    def run(
+        self,
+        research_goal: str,
+        domain: str,
+        max_ideas: int = 3,
+        background_text: str = "",
+        prior_findings: str = "",
+    ) -> IdeaArchive:
+        """Generate ideas, informed by what earlier runs on this goal measured.
+
+        `prior_findings` is passed through to the model as evidence from those
+        runs, explicitly not as settled fact -- an idea ruled out by one
+        underpowered comparison is exactly the kind of idea worth retesting with
+        a sharper design.
+        """
+
         if not self.llm.use_mock:
             try:
                 payload = self.llm.chat_json(
@@ -20,11 +36,18 @@ class IdeaAgent:
                         "proposed_algorithm_type, experimental_plan, interestingness_score, novelty_score, "
                         "feasibility_score, risk_score, assumptions, required_data, expected_outputs. "
                         f"Goal: {research_goal}\nDomain: {domain}\nBackground: {background_text[:4000]}"
+                        + (f"\n\n{prior_findings[:2000]}" if prior_findings else "")
                     ),
                 )
                 ideas = [ResearchIdea(**item) for item in payload.get("ideas", [])[:max_ideas]]
                 if ideas:
                     return IdeaArchive(ideas=ideas, selected_index=0)
+            except LLMCallError as error:
+                # A bad key or a wrong model name will fail identically at
+                # every later stage. Degrading here would hide the cause six
+                # times over.
+                if error.is_permanent:
+                    raise
             except Exception:
                 pass
 

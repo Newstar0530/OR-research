@@ -187,15 +187,16 @@ def test_strategy_agent_adapts_after_initial_iteration() -> None:
 
 def test_refiner_applies_effect_range() -> None:
     code = "PROPOSED_EFFECT_LOW = 0.5\nPROPOSED_EFFECT_HIGH = 3.0\n"
-    refined = ExperimentRefinerAgent(LLMClient(use_mock=True)).run(code, "effect_range=1.25,4.75", 1, 0)
-    assert "PROPOSED_EFFECT_LOW = 1.25" in refined
-    assert "PROPOSED_EFFECT_HIGH = 4.75" in refined
+    outcome = ExperimentRefinerAgent(LLMClient(use_mock=True)).run(code, "effect_range=1.25,4.75", 1, 0)
+    assert "PROPOSED_EFFECT_LOW = 1.25" in outcome.code
+    assert "PROPOSED_EFFECT_HIGH = 4.75" in outcome.code
+    assert outcome.method == "string_replacement" and outcome.applied
 
 
 def test_refiner_preserves_future_import_position() -> None:
     code = '"""old header"""\nfrom __future__ import annotations\nVALUE = 1\n'
-    refined = ExperimentRefinerAgent(LLMClient(use_mock=True)).run(code, "plan", 1, 0)
-    lines = refined.splitlines()
+    outcome = ExperimentRefinerAgent(LLMClient(use_mock=True)).run(code, "plan", 1, 0)
+    lines = outcome.code.splitlines()
     future_index = lines.index("from __future__ import annotations")
     header_index = next(index for index, line in enumerate(lines) if line.startswith('"""Autonomous variant:'))
     assert future_index < header_index
@@ -210,9 +211,13 @@ def test_mutation_agent_selects_stress_operator() -> None:
 def test_refiner_applies_mutation_replacements() -> None:
     code = "PROBLEM_SIZES = [10, 25, 50]\nNOISE_SCALE = 1.0\n"
     mutation = MutationAgent(LLMClient(use_mock=True)).run(ResearchJournal(), 1, 2, "Adversarial stress test")
-    refined = ExperimentRefinerAgent(LLMClient(use_mock=True)).run(code, "Adversarial stress test", 1, 2, mutation)
-    assert "PROBLEM_SIZES = [25, 50, 100]" in refined
-    assert "NOISE_SCALE = 2.0" in refined
+    outcome = ExperimentRefinerAgent(LLMClient(use_mock=True)).run(code, "Adversarial stress test", 1, 2, mutation)
+    assert "PROBLEM_SIZES = [25, 50, 100]" in outcome.code
+    assert "NOISE_SCALE = 2.0" in outcome.code
+    assert outcome.applied
+    # REPLICATES is in the mutation but not in this snippet, so it must be
+    # reported as unmatched rather than silently dropped.
+    assert "REPLICATES = 10" in outcome.unmatched_replacements
 
 
 def test_code_patch_agent_marks_stress_rows() -> None:

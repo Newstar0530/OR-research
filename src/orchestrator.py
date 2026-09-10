@@ -35,6 +35,7 @@ from src.core.decision_engine import DecisionEngine
 from src.core.domain_tools import get_domain_tool_spec
 from src.core.experiment_contract import validate_experiment_contract
 from src.core.experiment_search import ExperimentSearchController
+from src.core.search_policy import SearchPolicyConfig
 from src.core.method_registry import build_method_registry
 from src.core.metric_registry import build_metric_registry
 from src.core.problem_schema import ResearchArtifactManifest, ResearchProblem, infer_problem_family
@@ -46,6 +47,7 @@ from src.domain_profiles import load_domain_profile, render_profile_markdown
 from src.execution.experiment_logger import ExperimentLogger
 from src.execution.sandbox_runner import SandboxRunner
 from src.llm_client import LLMClient
+from src.llm_errors import LLMCallError
 from src.utils.file_utils import ensure_dir, read_text_if_exists, write_json
 from src.utils.autonomy_readiness import evaluate_autonomy_readiness
 from src.utils.claim_checker import check_report_claims
@@ -59,7 +61,16 @@ from src.utils.llm_tracker import LLMInteractionTracker, write_llm_tracker
 from src.utils.plotting import save_objective_gap_plot
 from src.utils.result_evaluator import evaluate_results
 from src.utils.statistical_evidence import evaluate_statistical_evidence
-from src.utils.research_memory import append_memory
+from src.core.artifact_provenance import ProvenanceLedger, write_provenance
+from src.utils.bibliography import literature_digest
+from src.utils.research_memory import (
+    RunRecord,
+    append_memory,
+    build_prior_findings,
+    record_run,
+    summarize_journal,
+    write_prior_findings,
+)
 from src.utils.run_tracker import RunTracker, write_run_status
 from src.utils.semantic_scholar import write_semantic_scholar_report
 
@@ -84,7 +95,20 @@ class ResearchOrchestrator:
         self.config = config
         self.project_root = project_root or Path.cwd()
         self.llm_tracker = LLMInteractionTracker()
-        self.llm = LLMClient(config.llm_provider, config.model_name, config.use_mock_llm, tracker=self.llm_tracker)
+        self.llm = LLMClient(
+            config.llm_provider,
+            config.model_name,
+            config.use_mock_llm,
+            tracker=self.llm_tracker,
+            max_attempts=config.llm_max_attempts,
+            backoff_seconds=config.llm_backoff_seconds,
+            timeout_seconds=config.llm_timeout_seconds,
+            temperature=config.llm_temperature,
+            max_calls=config.max_llm_calls,
+            max_cost_usd=config.max_llm_cost_usd,
+            price_per_1k_prompt_tokens=config.llm_price_per_1k_prompt_tokens,
+            price_per_1k_response_tokens=config.llm_price_per_1k_response_tokens,
+        )
         self.completed_stages: list[str] = []
 
     def run(self) -> Path:
@@ -118,6 +142,25 @@ class ResearchOrchestrator:
                     local_literature = lit_df.sort_values(["relevance_score", "filename"], ascending=[False, True]).head(20).to_dict("records")
             except Exception:
                 local_literature = []
+        # The uploaded papers used to stop here: `background_text` for ideation
+        # was the static domain-profile YAML, so a user who supplied literature
+        # got ideas that had never seen it.
+        literature_brief = literature_digest(local_literature)
+
+        # Read the project's memory before any planning agent runs, so what the
+        # earlier runs measured is available to the agents that choose what to
+        # try -- not merely reported after the fact.
+        self._preflight_llm(run_dir)
+        prior_findings = build_prior_findings(
+            self.project_root,
+            self.config.research_goal,
+            exclude_run_dirs=[str(run_dir)],
+        )
+        write_prior_findings(run_dir, prior_findings)
+        prior_brief = prior_findings.to_prompt()
+        # Every front-half stage declares where its content came from, so a
+        # placeholder can never be mistaken for a finding.
+        provenance = ProvenanceLedger()
 
         domain_selection = DomainClassifierAgent(self.llm).run(self.config.research_goal, self.config.research_domain_mode)
         domain_profile = load_domain_profile(domain_selection["profile"])
@@ -137,6 +180,12 @@ class ResearchOrchestrator:
             human_verification_needed=domain_profile.get("human_checks", [])[:5],
         )
         self._mark("domain_classification")
+        provenance.record(
+            "domain_classification",
+            "derived",
+            domain_selection.get("reason", ""),
+            inputs_used=["research_goal"],
+        )
         write_json(run_dir / "domain_selection.json", domain_selection)
         write_json(
             run_dir / "recommended_solver_tools.json",
@@ -176,14 +225,40 @@ class ResearchOrchestrator:
             self.config.research_goal,
             self.config.domain,
             self.config.max_ideas,
-            background_text=profile_markdown,
+            background_text=(
+                profile_markdown + ("\n\n" + literature_brief if literature_brief else "")
+            ),
+            prior_findings=prior_brief,
+        )
+        provenance.record(
+            "idea_generation",
+            "derived" if self.llm.use_mock else "llm",
+            "Mock mode selects a template idea by domain keyword; no model reasoned about the goal."
+            if self.llm.use_mock
+            else "A language model generated the idea archive.",
+            inputs_used=["research_goal", "domain_profile"]
+            + (["literature_index"] if literature_brief else [])
+            + (["prior_findings"] if prior_brief else []),
         )
         self._mark("idea_generation")
         write_json(run_dir / "idea_archive.json", idea_archive.model_dump())
         selected = idea_archive.ideas[idea_archive.selected_index]
         write_json(run_dir / "selected_idea.json", selected.model_dump())
 
-        novelty = NoveltyAgent(self.llm).run(selected, local_literature=local_literature) if self.config.enable_novelty_check else None
+        novelty_source = None
+        if self.config.enable_novelty_check:
+            novelty, novelty_source = NoveltyAgent(self.llm).run(selected, local_literature=local_literature)
+        else:
+            novelty = None
+        provenance.record(
+            "novelty_checking",
+            novelty_source or "not_generated",
+            "Search queries were built from the idea; no database was queried."
+            if novelty_source
+            else "The novelty check was disabled for this run.",
+            inputs_used=["selected_idea"] if novelty_source else [],
+            missing=[] if novelty_source else ["enable_novelty_check: true"],
+        )
         self._mark("novelty_checking")
         if novelty:
             (run_dir / "novelty_report.md").write_text(self._novelty_markdown(novelty), encoding="utf-8")
@@ -192,22 +267,79 @@ class ResearchOrchestrator:
         else:
             (run_dir / "novelty_report.md").write_text("# Novelty Report\n\nNovelty check disabled.\n", encoding="utf-8")
 
-        gap_analysis = GapSynthesisAgent(self.llm).run(self.config.research_goal, domain_profile, literature_index_path)
+        gap_analysis, gap_source, gap_inputs = GapSynthesisAgent(self.llm).run(
+            self.config.research_goal, domain_profile, literature_index_path
+        )
+        provenance.record(
+            "gap_synthesis",
+            gap_source,
+            "A model proposed the gaps from the indexed evidence."
+            if gap_source == "llm"
+            else "No model was available, so no research gap was proposed.",
+            inputs_used=gap_inputs if gap_source != "not_generated" else [],
+            missing=[]
+            if gap_source != "not_generated"
+            else ["a configured LLM, or a researcher who has read the literature"],
+        )
         self._mark("gap_synthesis")
         (run_dir / "research_gap_analysis.md").write_text(gap_analysis, encoding="utf-8")
 
         template_text = read_text_if_exists(self._resolve_path(self.config.template_path))
-        model = ModelingAgent(self.llm).run(selected, self.config.research_goal, template_text)
+        model, model_source, model_inputs = ModelingAgent(self.llm).run(
+            selected,
+            self.config.research_goal,
+            template_text,
+            domain_profile=domain_profile,
+            literature_brief=literature_brief,
+        )
+        provenance.record(
+            "mathematical_modeling",
+            model_source,
+            "A language model wrote the formulation, and it passed the same inspection the"
+            " critique applies: no scaffold placeholders, all sections present, real"
+            " mathematics, and a chosen objective direction."
+            if model_source == "llm"
+            else "`model_draft.md` is the generic scaffold with this run's goal interpolated into"
+            " it. No model formulated this problem; see `model_critique.md` for which elements"
+            " are still placeholders.",
+            inputs_used=model_inputs if model_source == "llm" else [],
+            missing=[]
+            if model_source == "llm"
+            else ["a configured LLM, or a researcher writing the formulation"],
+        )
         self._mark("mathematical_modeling")
         (run_dir / "model_draft.md").write_text(model.markdown, encoding="utf-8")
         model_ir = write_model_ir(model.markdown, run_dir, self.config.project_name)
         export_model_skeletons(model_ir, run_dir)
 
-        critique = CriticAgent(self.llm).run(model.markdown)
+        critique, critique_source = CriticAgent(self.llm).run(model.markdown)
+        provenance.record(
+            "model_critique",
+            critique_source,
+            "The draft was inspected for unfilled scaffold placeholders and missing sections.",
+            inputs_used=["model_draft"],
+        )
         self._mark("model_critique")
         (run_dir / "model_critique.md").write_text(self._critique_markdown(critique), encoding="utf-8")
 
-        algorithm = AlgorithmAgent(self.llm).run(selected, model.markdown)
+        algorithm, algorithm_source, algorithm_inputs = AlgorithmAgent(self.llm).run(
+            selected,
+            model.markdown,
+            domain_profile=domain_profile,
+            template_description=self.config.experiment_template or domain_selection["profile"],
+        )
+        provenance.record(
+            "algorithm_proposal",
+            algorithm_source,
+            "A model chose the algorithm from the formulation."
+            if algorithm_source == "llm"
+            else "Candidate families come from the domain profile; none was selected for this"
+            " problem. What actually runs is the experiment template.",
+            inputs_used=algorithm_inputs,
+            missing=[]
+            if algorithm_source == "llm"
+            else ["a configured LLM, or a researcher choosing the algorithm family"],
+        )
         self._mark("algorithm_proposal")
         (run_dir / "algorithm_plan.md").write_text(self._algorithm_markdown(algorithm), encoding="utf-8")
 
@@ -223,6 +355,7 @@ class ResearchOrchestrator:
         experiment_path.write_text(experiment.code, encoding="utf-8")
 
         runner = SandboxRunner(self.config.solver_timeout_seconds)
+        journal = None
         if self.config.enable_autonomous_loop:
             search = ExperimentSearchController(
                 self.llm,
@@ -247,6 +380,14 @@ class ResearchOrchestrator:
                 aider_model=self.config.aider_model,
                 aider_timeout_seconds=self.config.aider_timeout_seconds,
                 max_repair_attempts=self.config.max_debug_attempts,
+                llm_repair_attempts=self.config.llm_repair_attempts,
+                search_policy=SearchPolicyConfig(
+                    num_drafts=self.config.search_num_drafts,
+                    max_debug_depth=self.config.search_max_debug_depth,
+                    debug_probability=self.config.search_debug_probability,
+                    exploration_weight=self.config.search_exploration_weight,
+                    seed=self.config.search_seed,
+                ),
             )
             journal = search.run(
                 run_dir,
@@ -255,6 +396,7 @@ class ResearchOrchestrator:
                 experiment.code,
                 research_state=research_state,
                 agent_runtime=runtime,
+                prior_findings=prior_brief,
             )
             best = journal.best_node()
             status = best.status if best else "failed"
@@ -281,7 +423,7 @@ class ResearchOrchestrator:
         (run_dir / "sensitivity_report.md").write_text(sensitivity.markdown, encoding="utf-8")
         result_evaluation = evaluate_results(run_dir / "results.csv")
         (run_dir / "result_evaluation.md").write_text(result_evaluation, encoding="utf-8")
-        evaluate_statistical_evidence(
+        statistical_evidence = evaluate_statistical_evidence(
             run_dir / "results.csv",
             run_dir,
             metric=self.config.primary_metric,
@@ -311,7 +453,16 @@ class ResearchOrchestrator:
                 encoding="utf-8",
             )
 
-        review = ReviewerAgent(self.llm).run(report_text)
+        review, review_source = ReviewerAgent(self.llm).run(report_text)
+        provenance.record(
+            "automated_review",
+            review_source,
+            "A model reviewed the report and produced the scores."
+            if review_source == "llm"
+            else "Nothing read the report; the scores are absent rather than defaulted.",
+            inputs_used=["final_report"] if review_source == "llm" else [],
+            missing=[] if review_source == "llm" else ["a configured LLM, or a human reviewer"],
+        )
         self._mark("automated_review")
         (run_dir / "automated_review.md").write_text(self._review_markdown(review), encoding="utf-8")
         write_latex_paper(run_dir)
@@ -324,6 +475,15 @@ class ResearchOrchestrator:
         write_json(run_dir / "next_research_cycle_plan.json", remediation.model_dump())
         (run_dir / "next_research_cycle_plan.md").write_text(remediation.to_markdown(), encoding="utf-8")
         (run_dir / "next_config_patch.yaml").write_text(remediation.config_patch_yaml(), encoding="utf-8")
+        # The ledger's own headline says whether a model reasoned about
+        # anything; the tracker knows whether the calls succeeded.
+        provenance.record(
+            "llm_calls",
+            "derived",
+            self.llm_tracker.headline(),
+            inputs_used=["llm_interactions"],
+        )
+        write_provenance(run_dir, provenance)
         write_json(run_dir / "stage_order.json", self.completed_stages)
         tracker.finish("completed", run_dir, self.completed_stages)
         write_run_status(run_dir, tracker)
@@ -337,9 +497,135 @@ class ResearchOrchestrator:
                 "run_dir": str(run_dir),
                 "stages": self.completed_stages,
                 "review_overall_score": review.overall_score,
+                "review_performed": review.review_performed,
             },
         )
+        self._record_run_memory(
+            run_dir, journal, statistical_evidence, review, domain_selection["profile"]
+        )
         return run_dir
+
+    def _preflight_llm(self, run_dir: Path) -> None:
+        """One probe call before the pipeline, so a bad key fails in seconds.
+
+        Without this, a mistyped key degrades every LLM-backed stage in turn and
+        the run finishes with a report saying no stage used a language model --
+        true, and silent about the one thing worth knowing. A permanent error
+        stops the run here and names what to change; a transient one is recorded
+        and the run continues, since it may well clear.
+        """
+
+        if self.config.use_mock_llm or not self.config.llm_preflight:
+            return
+        error = self.llm.preflight()
+        if error is None:
+            return
+        (run_dir / "llm_preflight.md").write_text(
+            "# LLM Preflight\n\n"
+            f"- provider: {self.config.llm_provider}\n"
+            f"- model: {self.config.model_name}\n"
+            f"- result: {error.summary()}\n"
+            f"- permanent: {error.is_permanent}\n",
+            encoding="utf-8",
+        )
+        if error.is_permanent:
+            raise LLMCallError(
+                error.kind,
+                (
+                    f"LLM preflight failed and the cause is permanent, so the run was stopped "
+                    f"before doing any work: {error.summary()} "
+                    "Set `llm_preflight: false` to run with every model-backed stage degraded on "
+                    "purpose."
+                ),
+                status=error.status,
+                detail=error.detail,
+            )
+
+    def _record_run_memory(
+        self,
+        run_dir: Path,
+        journal,
+        statistical_evidence,
+        review,
+        domain: str = "",
+    ) -> None:
+        """Write this run into the project's memory for the next run to read.
+
+        Everything stored here is a measurement this run actually produced. A
+        run whose search never started records zero nodes rather than nothing,
+        because "we tried and got nowhere" is itself worth carrying forward.
+
+        Memory is written last and failure to write it is not allowed to fail
+        the run: the report is already on disk, and losing a memory line costs
+        the next run some context, not this run its results.
+        """
+
+        try:
+            summary = (
+                summarize_journal(
+                    journal,
+                    primary_metric=self.config.primary_metric,
+                    objective_direction=self.config.objective_direction,
+                )
+                if journal is not None
+                else {
+                    "primary_metric": self.config.primary_metric,
+                    "objective_direction": self.config.objective_direction,
+                }
+            )
+            notes = []
+            if journal is None:
+                notes.append("The autonomous search loop was disabled for this run.")
+            record = RunRecord(
+                project_name=self.config.project_name,
+                research_goal=self.config.research_goal,
+                run_dir=str(run_dir),
+                domain=domain or self.config.domain,
+                evidence_strength=getattr(statistical_evidence, "evidence_strength", "") or "",
+                supports_improvement_claim=bool(
+                    getattr(statistical_evidence, "supports_improvement_claim", False)
+                ),
+                refuted_hypotheses=self._unsupported_hypotheses(journal, statistical_evidence),
+                # None when no review happened. The previous version stored a
+                # constant 6 here, so memory carried a number nothing had measured.
+                review_overall_score=getattr(review, "overall_score", None)
+                if getattr(review, "review_performed", False)
+                else None,
+                notes=notes,
+                **summary,
+            )
+            record_run(self.project_root, record)
+        except Exception as exc:  # pragma: no cover - memory must never break a run
+            (run_dir / "research_memory_error.txt").write_text(
+                f"Could not write the cross-run memory record: {exc}\n", encoding="utf-8"
+            )
+
+    def _unsupported_hypotheses(self, journal, statistical_evidence) -> list[str]:
+        """Hypotheses this run tested and did not support.
+
+        `not supported` is the whole claim. The comparison may have been
+        underpowered, the effect may be real and small, the instance family may
+        have been wrong -- so the wording carries the run's own verdict rather
+        than upgrading it to a refutation.
+        """
+
+        unsupported: list[str] = []
+        strength = getattr(statistical_evidence, "evidence_strength", "") or "unrecorded"
+        if statistical_evidence is not None and not getattr(
+            statistical_evidence, "supports_improvement_claim", False
+        ):
+            unsupported.append(
+                f"The proposed method did not beat the baseline on {self.config.primary_metric}"
+                f" at the run's significance level (verdict `{strength}`)."
+            )
+        if journal is None:
+            return unsupported
+        for node in getattr(journal, "nodes", []) or []:
+            comparison = (getattr(node, "metadata", {}) or {}).get("method_comparison")
+            if isinstance(comparison, dict) and comparison.get("supports_hypothesis") is False:
+                reason = comparison.get("reason") or "no reason recorded"
+                unsupported.append(f"Node `{node.id}`: {reason}")
+        return unsupported[:10]
 
     def _create_run_dir(self) -> Path:
         safe_project = re.sub(r"[^A-Za-z0-9_.-]+", "_", self.config.project_name).strip("_") or "project"
@@ -440,13 +726,7 @@ class ResearchOrchestrator:
 {chr(10).join(f"- {x}" for x in r.questions_for_authors)}
 
 ## Scores
-- Soundness: {r.soundness_score}/10
-- Novelty: {r.novelty_score}/10
-- Technical quality: {r.technical_quality_score}/10
-- Reproducibility: {r.reproducibility_score}/10
-- Presentation: {r.presentation_score}/10
-- Overall: {r.overall_score}/10
-- Confidence: {r.confidence_score}/10
+{_score_lines(r)}
 
 ## Recommendation
 {r.recommendation}
@@ -473,3 +753,29 @@ class ResearchOrchestrator:
 ## Human Checks
 {chr(10).join(f"- {m}" for m in spec.human_checks)}
 """
+
+
+def _score_lines(review) -> str:
+    """Render the review scores, or say plainly that there are none.
+
+    Printing `None/10` would read as a broken template; printing a default
+    would read as a verdict. Neither is what happened."""
+
+    fields = (
+        ("Soundness", review.soundness_score),
+        ("Novelty", review.novelty_score),
+        ("Technical quality", review.technical_quality_score),
+        ("Reproducibility", review.reproducibility_score),
+        ("Presentation", review.presentation_score),
+        ("Overall", review.overall_score),
+        ("Confidence", review.confidence_score),
+    )
+    if not getattr(review, "review_performed", False) or all(value is None for _, value in fields):
+        return (
+            "No scores: no review was performed. An absent score is not a low score, "
+            "and it is not a high one."
+        )
+    return "\n".join(
+        f"- {label}: {value}/10" if value is not None else f"- {label}: not scored"
+        for label, value in fields
+    )

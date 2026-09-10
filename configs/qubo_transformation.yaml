@@ -1,0 +1,52 @@
+# Verification study for the MI 0-1 -> QUBO encoding, the last hop before a
+# quantum sampler.
+#
+# Two constants can silently change the answer here, and they fail differently:
+# the discretisation precision (a measurable cost) and the penalty weight (a
+# correctness question). The study separates them, and refuses to call a
+# sampler's best draw a ground state.
+project_name: qubo_encoding_equivalence
+research_goal: >-
+  Determine whether the penalty-based QUBO encoding of a 0-1 program preserves the
+  optimum, locate the penalty threshold below which the ground state becomes an
+  infeasible bitstring, and measure the bit cost that each inequality constraint adds.
+domain: "Industrial Engineering / Operations Research"
+research_domain_mode: "auto"
+project_plugin: "auto"
+
+experiment_template: "qubo_transformation"
+template_path:
+
+output_dir: "runs"
+max_ideas: 3
+max_experiments: 3
+max_debug_attempts: 2
+
+# Exhaustive ground-state proofs are exponential in the bit count.
+solver_timeout_seconds: 2400
+
+llm_provider: "mock"
+model_name: "mock-ie-or"
+use_mock_llm: true
+
+enable_novelty_check: true
+enable_report_generation: true
+literature_dir:
+benchmark_dir:
+enable_llm_agent_runtime: true
+enable_autonomous_loop: true
+max_research_iterations: 2
+max_candidate_branches: 3
+autonomous_patience: 2
+min_metric_improvement: 0.0
+
+primary_metric: "gap_to_known_optimum"
+objective_direction: "minimize"
+primary_metric_method: "qubo_derived_penalty"
+baseline_method: "qubo_scale_0.001"
+proposed_method: "qubo_derived_penalty"
+
+code_editing_backend: "deterministic"
+aider_command: "aider"
+aider_model:
+aider_timeout_seconds: 120

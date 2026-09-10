@@ -7,6 +7,13 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from src.core.generated_code_guard import (
+    GuardVerdict,
+    extract_code,
+    validate_generated_experiment,
+)
+from src.execution.traceback_parser import RepairContext, build_repair_context
+
 
 class WorkspaceRepairRequest(BaseModel):
     work_dir: Path
@@ -14,6 +21,20 @@ class WorkspaceRepairRequest(BaseModel):
     stdout: str = ""
     attempt: int = 0
     script_name: str = "experiment.py"
+    #: The parsed failure. Built from stderr when absent, so callers that do not
+    #: supply one still get structured matching instead of substring guessing.
+    context: RepairContext | None = None
+
+    def resolved_context(self) -> RepairContext:
+        if self.context is not None:
+            return self.context
+        return build_repair_context(
+            self.stderr,
+            self.work_dir,
+            script_name=self.script_name,
+            stdout=self.stdout,
+            attempt=self.attempt,
+        )
 
 
 class WorkspaceRepairResult(BaseModel):
@@ -34,7 +55,12 @@ class DeterministicRepairBackend:
         script = request.work_dir / request.script_name
         if not script.exists():
             return WorkspaceRepairResult(attempted=False, backend=self.name, reason=f"{request.script_name} not found.")
-        if "from __future__ imports must occur at the beginning" in request.stderr:
+        context = request.resolved_context()
+        message = f"{context.exception_type or ''}: {context.exception_message or ''}"
+        if (
+            context.exception_type == "SyntaxError"
+            and "from __future__ imports must occur at the beginning" in message
+        ) or "from __future__ imports must occur at the beginning" in request.stderr:
             text = script.read_text(encoding="utf-8")
             repaired = _move_future_imports_after_module_docstring(text)
             try:
@@ -54,7 +80,16 @@ class DeterministicRepairBackend:
                 reason="Moved future imports before autonomous headers.",
                 notes=["This is a bounded deterministic repair, not an unrestricted code rewrite."],
             )
-        return WorkspaceRepairResult(attempted=False, backend=self.name, reason="No deterministic repair rule matched stderr.")
+        return WorkspaceRepairResult(
+            attempted=False,
+            backend=self.name,
+            reason=(
+                f"No deterministic repair rule matches `{context.exception_type or 'an unparsed failure'}`."
+                " A bounded string rewrite cannot fix this class of error; it needs a code-editing"
+                " backend that can reason about the program."
+            ),
+            notes=[context.filtered_traceback] if context.filtered_traceback else [],
+        )
 
 
 class AiderRepairBackend:
@@ -79,7 +114,9 @@ class AiderRepairBackend:
             return WorkspaceRepairResult(attempted=False, backend=self.name, reason=f"Aider command `{self.command}` was not found on PATH.")
 
         prompt_path = request.work_dir / f"aider_repair_prompt_attempt_{request.attempt}.md"
-        prompt_path.write_text(_aider_repair_prompt(script, request.stderr, request.stdout), encoding="utf-8")
+        prompt_path.write_text(
+            _aider_repair_prompt(script, request.resolved_context()), encoding="utf-8"
+        )
         cmd = [
             executable,
             "--yes-always",
@@ -147,16 +184,160 @@ class AiderRepairBackend:
         )
 
 
+
+REPAIR_SYSTEM_PROMPT = (
+    "You repair generated Operations Research experiment scripts. You return one complete "
+    "Python file and nothing else: no explanation, no diff, no partial snippet. You change the "
+    "smallest thing that fixes the reported error and you preserve the script's outputs."
+)
+
+
+class LLMRepairBackend:
+    """Ask a model to rewrite the script, then refuse to trust it.
+
+    This is the backend that can fix a failure nobody wrote a rule for, which
+    also makes it the one that can quietly destroy the experiment. So the model
+    never writes to disk directly: its output goes through
+    `validate_generated_experiment` first, and a rejection is fed back as the
+    next instruction rather than thrown away. A model that cannot satisfy the
+    checks in `max_attempts` tries leaves the workspace untouched.
+
+    The original script and every attempt are saved beside the workspace, so a
+    repair that made things worse is recoverable and readable afterwards.
+    """
+
+    name = "llm"
+
+    def __init__(self, llm, max_attempts: int = 2, min_retained_fraction: float = 0.5) -> None:
+        self.llm = llm
+        self.max_attempts = max(1, max_attempts)
+        self.min_retained_fraction = min_retained_fraction
+
+    def repair(self, request: WorkspaceRepairRequest) -> WorkspaceRepairResult:
+        script = request.work_dir / request.script_name
+        if not script.exists():
+            return WorkspaceRepairResult(attempted=False, backend=self.name, reason=f"{request.script_name} not found.")
+        if self.llm is None:
+            return WorkspaceRepairResult(
+                attempted=False,
+                backend=self.name,
+                reason="No LLM client was supplied to the repair backend.",
+            )
+        context = request.resolved_context()
+        if not (context.exception_type or context.filtered_traceback or context.stdout_tail):
+            # Nothing observable went wrong. Asking a model to fix an unnamed
+            # failure invites it to rewrite whatever it feels like.
+            return WorkspaceRepairResult(
+                attempted=False,
+                backend=self.name,
+                reason=(
+                    "The failure produced no traceback, no exception and no output, so there is "
+                    "nothing to hand a model. Check the runner's timeout and stderr capture."
+                ),
+            )
+
+        original = script.read_text(encoding="utf-8")
+        notes: list[str] = []
+        feedback = ""
+        for attempt in range(self.max_attempts):
+            prompt = _llm_repair_prompt(request.script_name, original, context, feedback)
+            try:
+                response = self.llm.chat(REPAIR_SYSTEM_PROMPT, prompt)
+            except Exception as exc:  # a provider outage must not kill the run
+                return WorkspaceRepairResult(
+                    attempted=True,
+                    applied=False,
+                    backend=self.name,
+                    reason=f"The LLM call failed: {exc}",
+                    notes=notes,
+                )
+            (request.work_dir / f"llm_repair_attempt_{request.attempt}_{attempt}.md").write_text(
+                f"# Repair attempt {attempt}\n\n## Prompt\n\n{prompt}\n\n## Response\n\n{response}\n",
+                encoding="utf-8",
+            )
+            candidate = extract_code(response)
+            verdict = validate_generated_experiment(
+                candidate, original, min_retained_fraction=self.min_retained_fraction
+            )
+            if verdict.ok:
+                backup = request.work_dir / f"experiment_before_repair_{request.attempt}.py"
+                backup.write_text(original, encoding="utf-8")
+                script.write_text(candidate, encoding="utf-8")
+                notes.extend(verdict.notes)
+                notes.append(f"Original saved to {backup.name}; the rewrite is not assumed correct, only bounded.")
+                return WorkspaceRepairResult(
+                    attempted=True,
+                    applied=True,
+                    backend=self.name,
+                    reason=(
+                        f"A rewritten `{request.script_name}` passed the generated-code checks on "
+                        f"attempt {attempt + 1} of {self.max_attempts}."
+                    ),
+                    notes=notes,
+                )
+            notes.append(f"Attempt {attempt + 1} rejected: " + "; ".join(verdict.violations))
+            feedback = verdict.to_feedback()
+
+        return WorkspaceRepairResult(
+            attempted=True,
+            applied=False,
+            backend=self.name,
+            reason=(
+                f"No rewrite passed the generated-code checks in {self.max_attempts} attempt(s), "
+                "so the workspace was left unchanged."
+            ),
+            notes=notes,
+        )
+
+
+def _llm_repair_prompt(
+    script_name: str, original: str, context: RepairContext, feedback: str = ""
+) -> str:
+    """The whole file, the parsed failure, and the rules the rewrite must satisfy."""
+
+    sections = [
+        context.to_prompt(),
+        "",
+        "Rules for your rewrite:",
+        f"- Return the complete contents of `{script_name}`, and nothing else.",
+        "- Keep writing `results.csv` and keep printing the final `SUMMARY_JSON:` line.",
+        "- Do not import socket, urllib, requests, subprocess, multiprocessing or shutil.",
+        "- Do not call eval, exec or any shell.",
+        "- Write only inside the script's own directory, using paths relative to __file__.",
+        "- Do not delete the experiment to make the error go away.",
+        "",
+        f"Current `{script_name}`:",
+        "```python",
+        original,
+        "```",
+    ]
+    if feedback:
+        sections.extend(["", feedback])
+    return "\n".join(sections)
+
+
 class CompositeRepairBackend:
+    """Dispatches to one backend, or tries them cheapest-first under `auto`.
+
+    The order in `auto` is deliberate: the deterministic rule costs nothing and
+    is certain when it applies, the LLM rewrite costs a call and is bounded but
+    not certain, and Aider costs a subprocess and an external install. Each is
+    only reached because the one before it had nothing to offer, and the reason
+    it had nothing is carried forward into the result rather than discarded.
+    """
+
     def __init__(
         self,
         mode: str = "deterministic",
         aider_command: str = "aider",
         aider_model: str | None = None,
         timeout_seconds: int = 120,
+        llm=None,
+        llm_attempts: int = 2,
     ) -> None:
         self.mode = mode
         self.deterministic = DeterministicRepairBackend()
+        self.llm_backend = LLMRepairBackend(llm, max_attempts=llm_attempts)
         self.aider = AiderRepairBackend(aider_command, aider_model, timeout_seconds)
 
     def repair(self, request: WorkspaceRepairRequest) -> WorkspaceRepairResult:
@@ -164,20 +345,23 @@ class CompositeRepairBackend:
             return WorkspaceRepairResult(attempted=False, backend="disabled", reason="Code editing backend is disabled.")
         if self.mode == "deterministic":
             return self.deterministic.repair(request)
+        if self.mode == "llm":
+            return self.llm_backend.repair(request)
         if self.mode == "aider":
             return self.aider.repair(request)
         if self.mode == "auto":
-            first = self.deterministic.repair(request)
-            if first.applied or first.attempted:
-                return first
-            second = self.aider.repair(request)
-            if second.attempted or second.applied:
-                second.notes.insert(0, f"Deterministic backend skipped: {first.reason}")
-                return second
+            skipped: list[str] = []
+            for backend in (self.deterministic, self.llm_backend, self.aider):
+                result = backend.repair(request)
+                if result.applied or result.attempted:
+                    result.notes = skipped + list(result.notes)
+                    return result
+                skipped.append(f"{backend.name} backend skipped: {result.reason}")
             return WorkspaceRepairResult(
                 attempted=False,
                 backend="auto",
-                reason=f"No backend attempted repair. deterministic={first.reason}; aider={second.reason}",
+                reason="No backend attempted repair.",
+                notes=skipped,
             )
         return WorkspaceRepairResult(
             attempted=False,
@@ -186,11 +370,16 @@ class CompositeRepairBackend:
         )
 
 
-def _aider_repair_prompt(script: Path, stderr: str, stdout: str) -> str:
+def _aider_repair_prompt(script: Path, context: RepairContext) -> str:
+    """Hand over the parsed failure, not the raw wall of stderr.
+
+    The framework's own frames are already gone, so the editor's attention goes
+    to the generated experiment rather than to the machinery that ran it.
+    """
+
     return f"""You are repairing a generated Operations Research experiment script.
 
 Edit only `{script.name}`.
-Make the smallest change needed to fix the failure.
 Keep the script self-contained.
 Preserve the required outputs:
 - results.csv
@@ -201,15 +390,7 @@ Do not add network calls.
 Do not call external solvers unless the current script already does so.
 Do not change files outside this workspace.
 
-STDOUT:
-```text
-{_preview(stdout, 2000)}
-```
-
-STDERR:
-```text
-{_preview(stderr, 4000)}
-```
+{context.to_prompt()}
 """
 
 

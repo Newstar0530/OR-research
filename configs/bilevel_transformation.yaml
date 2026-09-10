@@ -1,0 +1,54 @@
+# Verification study for the bilevel -> KKT -> MI 0-1 transformation chain.
+#
+# The question this run answers is not "which method is faster" but "does the
+# rewritten model still solve the same problem". Each instance's true optimum is
+# established by an oracle that uses neither KKT nor Big-M, and every rewrite is
+# compared against it.
+project_name: bilevel_transformation_equivalence
+research_goal: >-
+  Determine whether the KKT reformulation and the Fortuny-Amat Big-M linearisation
+  preserve the optimum of a linear bilevel program, and locate the Big-M threshold
+  below which the mixed 0-1 model silently returns a different answer.
+domain: "Industrial Engineering / Operations Research"
+research_domain_mode: "auto"
+project_plugin: "auto"
+
+experiment_template: "bilevel_transformation"
+template_path:
+
+output_dir: "runs"
+max_ideas: 3
+max_experiments: 3
+max_debug_attempts: 2
+
+# Vertex enumeration plus exhaustive complementarity patterns are deliberately
+# exponential; small instances, generous wall clock.
+solver_timeout_seconds: 1800
+
+llm_provider: "mock"
+model_name: "mock-ie-or"
+use_mock_llm: true
+
+enable_novelty_check: true
+enable_report_generation: true
+literature_dir:
+benchmark_dir:
+enable_llm_agent_runtime: true
+enable_autonomous_loop: true
+max_research_iterations: 2
+max_candidate_branches: 3
+autonomous_patience: 2
+min_metric_improvement: 0.0
+
+# The node metric is the relative gap of the rigorously derived linearisation.
+# It should be 0 on every instance; anything else is a defect, not a tuning knob.
+primary_metric: "gap_to_known_optimum"
+objective_direction: "minimize"
+primary_metric_method: "mi01_derived_bigM"
+baseline_method: "mi01_uniform_1e+06"
+proposed_method: "mi01_derived_bigM"
+
+code_editing_backend: "deterministic"
+aider_command: "aider"
+aider_model:
+aider_timeout_seconds: 120

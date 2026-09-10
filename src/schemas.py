@@ -7,7 +7,9 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
-RiskLevel = Literal["low", "medium", "high"]
+#: `unknown` is the honest value when nothing assessed the risk. Defaulting
+#: an unassessed similarity risk to "medium" reads as a finding.
+RiskLevel = Literal["unknown", "low", "medium", "high"]
 NoveltyRecommendation = Literal["keep", "revise", "reject"]
 ExecutionStatus = Literal["success", "failed", "timeout"]
 ReviewRecommendation = Literal["accept", "weak accept", "borderline", "weak reject", "reject"]
@@ -107,15 +109,21 @@ class AutomatedReview(BaseModel):
     strengths: list[str]
     weaknesses: list[str]
     questions_for_authors: list[str]
-    soundness_score: int = Field(ge=1, le=10)
-    novelty_score: int = Field(ge=1, le=10)
-    technical_quality_score: int = Field(ge=1, le=10)
-    reproducibility_score: int = Field(ge=1, le=10)
-    presentation_score: int = Field(ge=1, le=10)
-    overall_score: int = Field(ge=1, le=10)
-    confidence_score: int = Field(ge=1, le=10)
+    # Scores are optional because a review that did not happen must not report
+    # one. The previous version returned a fixed overall_score of 6 without
+    # reading the report, and that constant was carried into cross-run memory
+    # and the readiness assessment as if it meant something.
+    soundness_score: int | None = Field(default=None, ge=1, le=10)
+    novelty_score: int | None = Field(default=None, ge=1, le=10)
+    technical_quality_score: int | None = Field(default=None, ge=1, le=10)
+    reproducibility_score: int | None = Field(default=None, ge=1, le=10)
+    presentation_score: int | None = Field(default=None, ge=1, le=10)
+    overall_score: int | None = Field(default=None, ge=1, le=10)
+    confidence_score: int | None = Field(default=None, ge=1, le=10)
     recommendation: ReviewRecommendation
     required_revision_checklist: list[str]
+    #: True only when a model actually read the report and produced the scores.
+    review_performed: bool = False
 
 
 class ExperimentLogEntry(BaseModel):

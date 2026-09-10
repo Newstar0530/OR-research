@@ -18,13 +18,17 @@ class StrategyAgent:
         patience: int,
         min_improvement: float,
         directives: list[str] | None = None,
+        prior_findings: str = "",
     ) -> SearchStrategy:
         if iteration == 0 or not journal.nodes:
-            return SearchStrategy(
-                iteration=iteration,
-                branch_plans=initial_branches[:max_branches],
-                reasoning="Initial autonomous search uses broad branch plans from the planner.",
-            )
+            # The first iteration has no journal to reason from, which is exactly
+            # where memory of earlier runs is worth the most.
+            reasoning = "Initial autonomous search uses broad branch plans from the planner."
+            plans = initial_branches[:max_branches]
+            if prior_findings:
+                reasoning += " Prior runs on a similar goal were available as context."
+                plans = self._plans_with_prior_check(plans, prior_findings, max_branches)
+            return SearchStrategy(iteration=iteration, branch_plans=plans, reasoning=reasoning)
 
         plateau_count = journal.plateau_count(min_improvement=min_improvement)
         best = journal.best_node()
@@ -60,6 +64,32 @@ class StrategyAgent:
             branch_plans=plans[:max_branches],
             reasoning=f"Adaptive strategy selected branches from journal evidence; plateau_count={plateau_count}.",
         )
+
+    @staticmethod
+    def _plans_with_prior_check(plans: list[str], prior_findings: str, max_branches: int) -> list[str]:
+        """Spend one branch slot re-testing what an earlier run failed to support.
+
+        A previous run's negative result is a reason to look harder, not a
+        reason to stop looking, so the retest is added as a branch rather than
+        used to prune one. It is added only when a slot is free -- memory never
+        displaces the planner's own branches.
+        """
+
+        if len(plans) >= max_branches:
+            return plans[:max_branches]
+        headline = next(
+            (line.strip("- ").strip() for line in prior_findings.splitlines() if line.strip().startswith("-")),
+            "",
+        )
+        if not headline:
+            return plans[:max_branches]
+        return (
+            plans
+            + [
+                "Retest what an earlier run left unsupported, with a design that would"
+                f" separate a real null from an underpowered test: {headline[:200]}"
+            ]
+        )[:max_branches]
 
     @staticmethod
     def _plans_from_directives(directives: list[str], best_text: str) -> list[str]:

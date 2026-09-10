@@ -123,11 +123,25 @@ class SolveResult(BaseModel):
 
     # --- payload (not written to CSV) ---------------------------------------
     solution: list[int] = Field(default_factory=list)
+    #: Continuous or mixed solutions, for models that are not purely binary.
+    solution_values: list[float] = Field(default_factory=list)
     notes: str = ""
+
+    #: Domain-specific columns appended to the CSV row, e.g. the Big-M constant
+    #: and the equivalence verdict of a transformation experiment. Kept separate
+    #: from the fixed schema so a new experiment family cannot silently change
+    #: the meaning of an existing column.
+    extra: dict[str, float | int | str | bool | None] = Field(default_factory=dict)
 
     @property
     def claims_solution(self) -> bool:
         return self.solver_status in CLAIMS_SOLUTION
+
+    @property
+    def any_solution(self) -> list[float]:
+        """Whichever payload this result carries, as floats."""
+
+        return self.solution_values or [float(v) for v in self.solution]
 
     @property
     def is_trustworthy(self) -> bool:
@@ -192,6 +206,14 @@ class SolveResult(BaseModel):
             "gap": self.gap_to_known_optimum,
             "notes": self.notes,
         }
+        # Extras may never overwrite a fixed schema column.
+        for key, value in self.extra.items():
+            if key in row:
+                raise ValueError(
+                    f"extra column `{key}` collides with a fixed SolveResult column; "
+                    "pick a different name rather than shadowing the schema."
+                )
+            row[key] = value
         return row
 
 
@@ -202,12 +224,18 @@ SOLVE_RESULT_COLUMNS: list[str] = list(
 
 
 def write_results_csv(results: Sequence[SolveResult], path: str | Path) -> Path:
-    """Write `results.csv` with a stable column order."""
+    """Write `results.csv`: the fixed schema first, then any extra columns.
+
+    Extra columns are the union across rows, so a row that omits one still
+    writes a blank rather than shifting every following field.
+    """
 
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
+    extra_columns = sorted({key for result in results for key in result.extra})
+    fieldnames = SOLVE_RESULT_COLUMNS + extra_columns
     with target.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=SOLVE_RESULT_COLUMNS)
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, restval="")
         writer.writeheader()
         for result in results:
             writer.writerow(result.to_row())

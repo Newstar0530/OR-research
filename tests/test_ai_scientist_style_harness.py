@@ -15,7 +15,10 @@ def test_llm_interaction_tracker_records_token_estimates() -> None:
     tracker.record("mock", "m", "system prompt", "user prompt", "response", 0.1)
 
     assert tracker.interactions[0].approximate_prompt_tokens > 0
-    assert "calls: 1" in tracker.to_markdown()
+    assert tracker.interactions[0].status == "ok"
+    markdown = tracker.to_markdown()
+    assert "1 ok, 0 failed" in markdown
+    assert "none failed" in markdown
 
 
 def test_workspace_debugger_repairs_future_import_position(tmp_path: Path) -> None:

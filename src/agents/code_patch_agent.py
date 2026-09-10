@@ -3,6 +3,7 @@ from __future__ import annotations
 from src.agent_system.patch import PatchOperation, PatchProposal
 from src.core.mutation import MutationSpec
 from src.llm_client import LLMClient
+from src.llm_errors import LLMCallError
 
 
 class CodePatchAgent:
@@ -21,6 +22,10 @@ class CodePatchAgent:
                     ),
                 )
                 return PatchProposal(**payload)
+            except LLMCallError as error:
+                if error.is_permanent:
+                    raise
+                return None
             except Exception:
                 return None
         if mutation.kind == "baseline_strengthening" and "BASELINE_EFFECT = 0.0" in code:

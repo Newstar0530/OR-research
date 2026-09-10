@@ -12,6 +12,11 @@ from src.schemas import ExecutionResult
 
 NodeStatus = Literal["planned", "success", "failed", "timeout", "contract_failed"]
 
+#: How this node came to exist. `draft` starts a fresh tree from the base code,
+#: `improve` mutates a successful ancestor, `debug` attempts to repair a failed
+#: one. The distinction is what makes a search tree more than a chain.
+NodeKind = Literal["draft", "improve", "debug"]
+
 
 class ResearchNode(BaseModel):
     id: str = Field(default_factory=lambda: uuid4().hex[:12])
@@ -26,6 +31,15 @@ class ResearchNode(BaseModel):
     metric_value: float | None = None
     maximize: bool = False
     analysis: str = ""
+    kind: NodeKind = "improve"
+    depth: int = 0
+    #: How many consecutive repair attempts led here. Bounded so the search
+    #: cannot spend itself re-fixing one broken branch forever.
+    debug_depth: int = 0
+    exception_type: str | None = None
+    exception_message: str | None = None
+    failing_line: int | None = None
+    failure_summary: str = ""
     created_at: datetime = Field(default_factory=datetime.now)
     execution: ExecutionResult | None = None
     artifacts: dict[str, str] = Field(default_factory=dict)
@@ -34,6 +48,12 @@ class ResearchNode(BaseModel):
     @property
     def is_successful(self) -> bool:
         return self.status == "success" and self.metric_value is not None
+
+    @property
+    def is_buggy(self) -> bool:
+        """Ran and failed, so there is something concrete to repair."""
+
+        return self.status in ("failed", "timeout", "contract_failed")
 
     def better_than(self, other: "ResearchNode | None") -> bool:
         if other is None:
