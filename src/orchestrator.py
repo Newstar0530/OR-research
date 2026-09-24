@@ -21,6 +21,7 @@ from src.agents.idea_agent import IdeaAgent
 from src.agents.modeling_agent import ModelingAgent
 from src.agents.novelty_agent import NoveltyAgent
 from src.agents.report_agent import ReportAgent
+from src.agents.requirement_agent import RequirementAgent
 from src.agents.reviewer_agent import ReviewerAgent
 from src.agents.readiness_remediation_agent import ReadinessRemediationAgent
 from src.agents.sensitivity_agent import SensitivityAgent
@@ -39,6 +40,7 @@ from src.core.search_policy import SearchPolicyConfig
 from src.core.method_registry import build_method_registry
 from src.core.metric_registry import build_metric_registry
 from src.core.problem_schema import ResearchArtifactManifest, ResearchProblem, infer_problem_family
+from src.core.requirement_coverage import coverage_markdown
 from src.core.research_protocol import default_or_protocol
 from src.core.model_ir import write_model_ir
 from src.core.model_exporter import export_model_skeletons
@@ -81,7 +83,9 @@ class ResearchOrchestrator:
         "idea_generation",
         "novelty_checking",
         "gap_synthesis",
+        "requirement_extraction",
         "mathematical_modeling",
+        "requirement_coverage",
         "model_critique",
         "algorithm_proposal",
         "experiment_implementation",
@@ -284,13 +288,35 @@ class ResearchOrchestrator:
         self._mark("gap_synthesis")
         (run_dir / "research_gap_analysis.md").write_text(gap_analysis, encoding="utf-8")
 
+        # What the formulation will be held to, written down before it exists so
+        # the draft is measured against something not derived from the draft.
+        requirements, requirement_source = RequirementAgent(self.llm).run(
+            self.config.research_goal, selected, domain_profile
+        )
+        provenance.record(
+            "requirement_extraction",
+            requirement_source,
+            f"{len(requirements.requirements)} requirement(s) were extracted from the research goal"
+            " and the selected idea; the formulation is checked against them."
+            if requirements.requirements
+            else "No requirement could be extracted, so the formulation has nothing to be checked"
+            " against and its completeness is unknown rather than confirmed.",
+            inputs_used=["research_goal", "selected_idea"] if requirements.requirements else [],
+            missing=[] if requirements.requirements else ["a research goal that states its conditions"],
+        )
+        self._mark("requirement_extraction")
+        write_json(run_dir / "requirement_set.json", requirements.model_dump())
+        problem.constraint_candidates = [item.text for item in requirements.constraint_requirements]
+        write_json(run_dir / "problem_schema.json", problem.model_dump())
+
         template_text = read_text_if_exists(self._resolve_path(self.config.template_path))
-        model, model_source, model_inputs = ModelingAgent(self.llm).run(
+        model, model_source, model_inputs, coverage = ModelingAgent(self.llm).run(
             selected,
             self.config.research_goal,
             template_text,
             domain_profile=domain_profile,
             literature_brief=literature_brief,
+            requirements=requirements,
         )
         provenance.record(
             "mathematical_modeling",
@@ -312,12 +338,27 @@ class ResearchOrchestrator:
         model_ir = write_model_ir(model.markdown, run_dir, self.config.project_name)
         export_model_skeletons(model_ir, run_dir)
 
-        critique, critique_source = CriticAgent(self.llm).run(model.markdown)
+        provenance.record(
+            "requirement_coverage",
+            "derived" if coverage.checked else "not_generated",
+            f"{len(coverage.encoded)} of {len(coverage.matches)} requirements appear to be imposed"
+            f" by a constraint; {len(coverage.missing)} are not."
+            if coverage.checked
+            else "There was no requirement list to check the formulation against.",
+            inputs_used=["model_draft", "requirement_set"] if coverage.checked else [],
+            missing=[] if coverage.checked else ["an extracted requirement list"],
+        )
+        self._mark("requirement_coverage")
+        write_json(run_dir / "requirement_coverage.json", coverage.model_dump())
+        (run_dir / "requirement_coverage.md").write_text(coverage_markdown(coverage), encoding="utf-8")
+
+        critique, critique_source = CriticAgent(self.llm).run(model.markdown, coverage)
         provenance.record(
             "model_critique",
             critique_source,
-            "The draft was inspected for unfilled scaffold placeholders and missing sections.",
-            inputs_used=["model_draft"],
+            "The draft was inspected for unfilled scaffold placeholders and missing sections, and"
+            " compared against the requirement list.",
+            inputs_used=["model_draft", "requirement_coverage"],
         )
         self._mark("model_critique")
         (run_dir / "model_critique.md").write_text(self._critique_markdown(critique), encoding="utf-8")

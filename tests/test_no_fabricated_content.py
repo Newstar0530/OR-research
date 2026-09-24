@@ -176,7 +176,7 @@ def test_the_unreviewed_path_still_checks_the_report_it_was_given() -> None:
 
 
 def test_the_critic_reads_the_draft_and_names_the_placeholders() -> None:
-    draft, source, _ = ModelingAgent(MOCK).run(_idea(), "goal")
+    draft, source, _, _ = ModelingAgent(MOCK).run(_idea(), "goal")
     draft = draft.markdown
     assert source == "not_generated", "the scaffold is a template, not a formulation"
     critique, source = CriticAgent(MOCK).run(draft)

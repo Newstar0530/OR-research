@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from src.core.artifact_provenance import ContentSource
 from src.core.model_draft_inspection import PLACEHOLDER_MARKERS, inspect_model_draft
+from src.core.requirement_coverage import CoverageVerdict
 from src.llm_client import LLMClient
 from src.schemas import ModelCritique
 
@@ -25,7 +26,9 @@ class CriticAgent:
     def __init__(self, llm: LLMClient) -> None:
         self.llm = llm
 
-    def run(self, model_markdown: str) -> tuple[ModelCritique, ContentSource]:
+    def run(
+        self, model_markdown: str, coverage: CoverageVerdict | None = None
+    ) -> tuple[ModelCritique, ContentSource]:
         text = model_markdown or ""
         # The same inspection the modeling stage uses to decide whether a draft
         # is worth keeping, so the two can never disagree about what a scaffold is.
@@ -58,6 +61,21 @@ class CriticAgent:
                 "The objective direction is not stated. Minimising and maximising the same "
                 "expression are different problems."
             )
+        if coverage is not None and coverage.checked:
+            if coverage.missing:
+                critical.append(
+                    f"{len(coverage.missing)} of {len(coverage.matches)} stated requirements are "
+                    "not imposed by any constraint in the draft. A model missing a requirement is "
+                    "optimal over too large a feasible region, which reads as a better objective "
+                    "rather than as an error: "
+                    + "; ".join(item.requirement_text for item in coverage.missing)
+                    + "."
+                )
+            if not coverage.objective_sense_matches:
+                critical.append(
+                    f"The draft declares a `{coverage.observed_objective_sense}` objective where the "
+                    f"problem calls for `{coverage.required_objective_sense}`."
+                )
         if not critical:
             critical.append(
                 "No scaffold placeholder was detected. Every element below still needs a human "
@@ -77,7 +95,7 @@ class CriticAgent:
         critique = ModelCritique(
             critical_issues=critical,
             minor_issues=minor,
-            missing_constraints=self._missing_constraints(text, placeholders),
+            missing_constraints=self._missing_constraints(text, placeholders, coverage),
             questionable_assumptions=self._assumptions(text),
             suggested_revisions=self._revisions(placeholders, missing),
             human_verification_checklist=[
@@ -93,9 +111,21 @@ class CriticAgent:
         return critique, "derived"
 
     @staticmethod
-    def _missing_constraints(text: str, placeholders: list[str]) -> list[str]:
+    def _missing_constraints(
+        text: str, placeholders: list[str], coverage: CoverageVerdict | None = None
+    ) -> list[str]:
         if not text.strip():
             return ["Everything: there is no draft."]
+        if coverage is not None and coverage.checked:
+            if coverage.missing:
+                return [
+                    f"{item.requirement_text} -- {item.evidence}" for item in coverage.missing
+                ]
+            return [
+                f"None of the {len(coverage.matches)} stated requirements is unimposed. This is "
+                "completeness against the requirement list, not completeness in general: a "
+                "condition nobody wrote down was not looked for."
+            ]
         if placeholders:
             return [
                 "None can be identified, because the constraint section lists families "
@@ -103,8 +133,8 @@ class CriticAgent:
                 "can be checked for completeness until they are written down."
             ]
         return [
-            "Automated checking cannot tell whether a written constraint set is complete. "
-            "A human must confirm that every feasibility, boundary and coupling condition is present."
+            "No requirement list was available for this run, so the constraint set was compared "
+            "against nothing. Completeness is unchecked, not confirmed."
         ]
 
     @staticmethod

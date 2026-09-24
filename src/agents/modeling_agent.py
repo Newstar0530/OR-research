@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from src.core.artifact_provenance import ContentSource
 from src.core.model_draft_inspection import inspect_model_draft
+from src.core.requirement_coverage import CoverageVerdict, RequirementChecker, RequirementSet
 from src.llm_client import LLMClient
 from src.llm_errors import LLMCallError
 from src.schemas import ModelDraft, ResearchIdea
@@ -53,12 +54,14 @@ class ModelingAgent:
         template_text: str = "",
         domain_profile: dict | None = None,
         literature_brief: str = "",
-    ) -> tuple[ModelDraft, ContentSource, list[str]]:
-        """Returns (draft, content_source, inputs_used)."""
+        requirements: RequirementSet | None = None,
+    ) -> tuple[ModelDraft, ContentSource, list[str], CoverageVerdict]:
+        """Returns (draft, content_source, inputs_used, coverage)."""
 
+        held_to = requirements or RequirementSet()
         if not self.llm.use_mock:
-            drafted, notes = self._llm_draft(
-                idea, research_goal, domain_profile or {}, literature_brief, template_text
+            drafted, notes, coverage = self._llm_draft(
+                idea, research_goal, domain_profile or {}, literature_brief, template_text, held_to
             )
             if drafted is not None:
                 inputs = ["research_goal", "selected_idea"]
@@ -68,19 +71,28 @@ class ModelingAgent:
                     inputs.append("literature_index")
                 if template_text:
                     inputs.append("template_path")
-                return ModelDraft(markdown=drafted + human_verification_footer()), "llm", inputs
+                if held_to.requirements:
+                    inputs.append("requirement_set")
+                return ModelDraft(markdown=drafted + human_verification_footer()), "llm", inputs, coverage
             # The attempts are recorded in the scaffold so a reader can see the
             # model was asked and what it failed to produce.
+            scaffold = self._scaffold(idea, research_goal, notes) + human_verification_footer()
             return (
-                ModelDraft(markdown=self._scaffold(idea, research_goal, notes) + human_verification_footer()),
+                ModelDraft(markdown=scaffold),
                 "not_generated",
                 ["research_goal", "selected_idea"],
+                self._checker().check(scaffold, held_to),
             )
+        scaffold = self._scaffold(idea, research_goal) + human_verification_footer()
         return (
-            ModelDraft(markdown=self._scaffold(idea, research_goal) + human_verification_footer()),
+            ModelDraft(markdown=scaffold),
             "not_generated",
             ["research_goal", "selected_idea"],
+            self._checker().check(scaffold, held_to),
         )
+
+    def _checker(self) -> RequirementChecker:
+        return RequirementChecker(self.llm)
 
     def _llm_draft(
         self,
@@ -89,14 +101,25 @@ class ModelingAgent:
         domain_profile: dict,
         literature_brief: str,
         template_text: str,
-    ) -> tuple[str | None, list[str]]:
-        """Ask for a formulation, and refuse anything that is still a template."""
+        requirements: RequirementSet,
+    ) -> tuple[str | None, list[str], CoverageVerdict]:
+        """Ask for a formulation, and refuse anything that is still a template.
+
+        Two rejections apply, and they are different questions. The inspection
+        asks whether the draft is specific enough to be checked at all; the
+        coverage check asks whether what it specifies is what was asked for. A
+        draft can pass the first and fail the second -- a complete, fluent,
+        implementable formulation of the wrong problem -- and that is the
+        failure the solver downstream cannot catch.
+        """
 
         notes: list[str] = []
+        checker = self._checker()
+        coverage = CoverageVerdict()
         feedback = ""
         for attempt in range(MAX_MODEL_ATTEMPTS):
             prompt = self._prompt(
-                idea, research_goal, domain_profile, literature_brief, template_text, feedback
+                idea, research_goal, domain_profile, literature_brief, template_text, requirements, feedback
             )
             try:
                 draft = self.llm.chat(MODEL_SYSTEM_PROMPT, prompt)
@@ -105,18 +128,19 @@ class ModelingAgent:
                     raise
                 reason = exc.summary() if isinstance(exc, LLMCallError) else str(exc)
                 notes.append(f"Attempt {attempt + 1}: the language model call failed ({reason}).")
-                return None, notes
+                return None, notes, coverage
             body = _strip_fences(draft)
             inspection = inspect_model_draft(body)
-            if inspection.is_specific:
-                return body, notes
-            failures = inspection.failures()
+            coverage = checker.check(body, requirements)
+            failures = inspection.failures() + coverage.failures()
+            if inspection.is_specific and not coverage.blocks_acceptance():
+                return body, notes, coverage
             notes.append(f"Attempt {attempt + 1} was rejected: " + " ".join(failures))
             feedback = (
                 "Your previous draft was rejected because it is not yet a formulation of this "
                 "problem. Fix all of these:\n" + "\n".join(f"- {item}" for item in failures)
             )
-        return None, notes
+        return None, notes, coverage
 
     @staticmethod
     def _prompt(
@@ -125,6 +149,7 @@ class ModelingAgent:
         domain_profile: dict,
         literature_brief: str,
         template_text: str,
+        requirements: RequirementSet | None = None,
         feedback: str = "",
     ) -> str:
         sections = [
@@ -138,6 +163,23 @@ class ModelingAgent:
         typical = [str(item) for item in domain_profile.get("typical_models", []) or []]
         if typical:
             sections.append(f"Model families used in this domain: {', '.join(typical)}")
+        if requirements and requirements.requirements:
+            sections.extend(
+                [
+                    "",
+                    "Your formulation will be checked against these requirements. Each one must be "
+                    "imposed by a constraint you write, or explicitly declared inapplicable:",
+                ]
+            )
+            sections.extend(f"- {item.id}: {item.text}" for item in requirements.requirements)
+            if requirements.required_objective_sense != "unspecified":
+                sections.append(
+                    f"The objective must be a {requirements.required_objective_sense} problem."
+                )
+            sections.append(
+                "Tag every constraint with the requirement it imposes, as `[R1]` or `[R1, R2]` at "
+                "the start of the line. A requirement no constraint tags is treated as missing."
+            )
         if literature_brief:
             sections.extend(["", literature_brief[:4000]])
         if template_text:

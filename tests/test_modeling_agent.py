@@ -168,7 +168,7 @@ def test_an_empty_draft_is_not_specific() -> None:
 def test_the_critic_and_the_modeling_stage_agree_on_what_a_scaffold_is() -> None:
     """Kept as one inspection so they cannot drift apart."""
 
-    scaffold, _, _ = ModelingAgent(LLMClient(use_mock=True)).run(_idea(), "goal")
+    scaffold, _, _, _ = ModelingAgent(LLMClient(use_mock=True)).run(_idea(), "goal")
     critique, _ = CriticAgent(LLMClient(use_mock=True)).run(scaffold.markdown)
 
     assert not inspect_model_draft(scaffold.markdown).is_specific
@@ -184,7 +184,7 @@ def test_the_critic_and_the_modeling_stage_agree_on_what_a_scaffold_is() -> None
 
 def test_a_specific_formulation_is_accepted_and_recorded_as_llm_written() -> None:
     llm = ScriptedLLM(f"```markdown\n{GOOD_DRAFT}```")
-    draft, source, inputs = ModelingAgent(llm).run(
+    draft, source, inputs, _ = ModelingAgent(llm).run(
         _idea(), "minimise weighted tardiness", literature_brief="Indexed literature: ..."
     )
 
@@ -196,7 +196,7 @@ def test_a_specific_formulation_is_accepted_and_recorded_as_llm_written() -> Non
 
 def test_a_template_shaped_answer_is_rejected_and_the_reasons_fed_back() -> None:
     llm = ScriptedLLM(PROSE_ABOUT_MODELLING, GOOD_DRAFT)
-    draft, source, _ = ModelingAgent(llm).run(_idea(), "goal")
+    draft, source, _, _ = ModelingAgent(llm).run(_idea(), "goal")
 
     assert source == "llm", "the second attempt should have been accepted"
     assert len(llm.prompts) == 2
@@ -207,7 +207,7 @@ def test_a_template_shaped_answer_is_rejected_and_the_reasons_fed_back() -> None
 
 def test_a_model_that_never_formulates_falls_back_and_says_what_it_tried() -> None:
     llm = ScriptedLLM(PROSE_ABOUT_MODELLING)
-    draft, source, _ = ModelingAgent(llm).run(_idea(), "goal")
+    draft, source, _, _ = ModelingAgent(llm).run(_idea(), "goal")
 
     assert source == "not_generated"
     assert len(llm.prompts) == 2, "both attempts should have been spent"
@@ -219,7 +219,7 @@ def test_a_model_that_never_formulates_falls_back_and_says_what_it_tried() -> No
 
 
 def test_a_provider_outage_does_not_take_the_run_down() -> None:
-    draft, source, _ = ModelingAgent(BrokenLLM()).run(_idea(), "goal")
+    draft, source, _, _ = ModelingAgent(BrokenLLM()).run(_idea(), "goal")
     assert source == "not_generated"
     assert "provider is down" in draft.markdown
 
@@ -245,7 +245,7 @@ def test_the_prompt_carries_the_study_and_forbids_placeholder_symbols() -> None:
 
 
 def test_the_mock_path_offers_the_scaffold_as_a_template_not_a_draft() -> None:
-    draft, source, _ = ModelingAgent(LLMClient(use_mock=True)).run(_idea(), "goal")
+    draft, source, _, _ = ModelingAgent(LLMClient(use_mock=True)).run(_idea(), "goal")
     assert source == "not_generated"
     assert "a form to fill in, not a draft of your model" in draft.markdown
     assert "No language model was configured" in draft.markdown
@@ -253,6 +253,6 @@ def test_the_mock_path_offers_the_scaffold_as_a_template_not_a_draft() -> None:
 
 def test_a_fenced_response_is_unwrapped() -> None:
     llm = ScriptedLLM(f"```\n{GOOD_DRAFT}\n```")
-    draft, source, _ = ModelingAgent(llm).run(_idea(), "goal")
+    draft, source, _, _ = ModelingAgent(llm).run(_idea(), "goal")
     assert source == "llm"
     assert draft.markdown.lstrip().startswith("# Mathematical Model Draft")
