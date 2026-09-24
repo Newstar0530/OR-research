@@ -6,6 +6,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from src.core.or_ir import OptimizationModel
+
 
 #: `unknown` is the honest value when nothing assessed the risk. Defaulting
 #: an unassessed similarity risk to "medium" reads as a finding.
@@ -47,7 +49,16 @@ class NoveltyReport(BaseModel):
 
 
 class ModelDraft(BaseModel):
+    """The formulation, as an object and as a document.
+
+    `markdown` is what a human reads. When `model` is present it is *rendered
+    from* it, so the two cannot drift; when it is absent the formulation only
+    ever existed as prose and nothing structural can be checked about it.
+    Validators read `model`; report writers read `markdown`.
+    """
+
     markdown: str
+    model: OptimizationModel | None = None
 
 
 class ModelCritique(BaseModel):

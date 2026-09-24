@@ -22,8 +22,11 @@ template, not as a draft of this problem.
 
 from __future__ import annotations
 
+from pydantic import ValidationError
+
 from src.core.artifact_provenance import ContentSource
 from src.core.model_draft_inspection import inspect_model_draft
+from src.core.or_ir import OptimizationModel
 from src.core.requirement_coverage import CoverageVerdict, RequirementChecker, RequirementSet
 from src.llm_client import LLMClient
 from src.llm_errors import LLMCallError
@@ -41,6 +44,39 @@ MODEL_SYSTEM_PROMPT = (
 
 #: How many times a rejected draft may be sent back with its failures.
 MAX_MODEL_ATTEMPTS = 2
+
+#: Asking for fields rather than a document. The point is not the format: it is
+#: that a field cannot be written around. Prose can describe a variable without
+#: ever saying whether it is binary, and name a constraint without writing one;
+#: `domain` and `expression` have to be filled in or left visibly empty.
+_STRUCTURED_SUFFIX = """
+
+Answer as JSON with this shape:
+
+{
+  "problem_name": "<short name>",
+  "sets": [{"name": "J", "description": "jobs", "index": "j"}],
+  "parameters": [{"name": "p_j", "description": "processing time", "unit": "minutes",
+                  "source": "<requirement id or data source>", "indexed_by": ["j"]}],
+  "decision_variables": [{"name": "x_j", "description": "...", "domain": "binary|integer|continuous",
+                          "lower_bound": "0", "upper_bound": null, "indexed_by": ["j"],
+                          "temporal_scope": null}],
+  "objective": {"sense": "minimize|maximize", "expression": "sum_j w_j * T_j",
+                "terms": [{"expression": "w_j * T_j", "business_meaning": "weighted tardiness cost"}]},
+  "constraints": [{"name": "capacity", "expression": "sum_j a_ij x_j <= b_i",
+                   "source_requirement": "<requirement id, e.g. R1>",
+                   "enforcement": "hard|soft", "penalty": null, "indexed_by": ["i"]}],
+  "uncertainty": [{"parameter": "d_t", "distribution": "...", "scenarios": "...", "ambiguity_set": null}],
+  "solver_requirements": {"problem_class": "MILP", "suggested_solvers": ["CP-SAT"],
+                          "time_limit_seconds": null, "mip_gap": null},
+  "validation_tests": [{"description": "...", "kind": "feasibility|bound|invariant|unit"}],
+  "assumptions": ["..."],
+  "limitations": ["..."]
+}
+
+Every decision variable needs a real `domain`. Every constraint needs a real `expression`;
+naming a family is not a constraint. State a `unit` for every parameter, and leave
+`uncertainty` empty if the problem is deterministic."""
 
 
 class ModelingAgent:
@@ -60,7 +96,7 @@ class ModelingAgent:
 
         held_to = requirements or RequirementSet()
         if not self.llm.use_mock:
-            drafted, notes, coverage = self._llm_draft(
+            drafted, structured, notes, coverage = self._llm_draft(
                 idea, research_goal, domain_profile or {}, literature_brief, template_text, held_to
             )
             if drafted is not None:
@@ -73,7 +109,12 @@ class ModelingAgent:
                     inputs.append("template_path")
                 if held_to.requirements:
                     inputs.append("requirement_set")
-                return ModelDraft(markdown=drafted + human_verification_footer()), "llm", inputs, coverage
+                return (
+                    ModelDraft(markdown=drafted + human_verification_footer(), model=structured),
+                    "llm",
+                    inputs,
+                    coverage,
+                )
             # The attempts are recorded in the scaffold so a reader can see the
             # model was asked and what it failed to produce.
             scaffold = self._scaffold(idea, research_goal, notes) + human_verification_footer()
@@ -102,15 +143,24 @@ class ModelingAgent:
         literature_brief: str,
         template_text: str,
         requirements: RequirementSet,
-    ) -> tuple[str | None, list[str], CoverageVerdict]:
+    ) -> tuple[str | None, OptimizationModel | None, list[str], CoverageVerdict]:
         """Ask for a formulation, and refuse anything that is still a template.
 
-        Two rejections apply, and they are different questions. The inspection
-        asks whether the draft is specific enough to be checked at all; the
-        coverage check asks whether what it specifies is what was asked for. A
-        draft can pass the first and fail the second -- a complete, fluent,
-        implementable formulation of the wrong problem -- and that is the
-        failure the solver downstream cannot catch.
+        Asks for fields first. A model that answers with an `OptimizationModel`
+        has had to state a domain for every variable, a unit for every
+        parameter and an expression for every constraint, and the document is
+        then rendered from what it said -- so prose can no longer paper over a
+        gap the fields would have exposed. A model that answers in prose
+        instead falls back to the document path, which is weaker and is
+        recorded as such.
+
+        Three rejections apply, and they are different questions. The
+        structural check asks whether there is enough here to implement; the
+        inspection asks whether the document is specific enough to be judged;
+        the coverage check asks whether what it specifies is what was asked
+        for. A draft can pass the first two and fail the third -- a complete,
+        fluent, implementable formulation of the wrong problem -- and that is
+        the failure the solver downstream cannot catch.
         """
 
         notes: list[str] = []
@@ -121,26 +171,60 @@ class ModelingAgent:
             prompt = self._prompt(
                 idea, research_goal, domain_profile, literature_brief, template_text, requirements, feedback
             )
-            try:
-                draft = self.llm.chat(MODEL_SYSTEM_PROMPT, prompt)
-            except Exception as exc:
-                if isinstance(exc, LLMCallError) and exc.is_permanent:
-                    raise
-                reason = exc.summary() if isinstance(exc, LLMCallError) else str(exc)
-                notes.append(f"Attempt {attempt + 1}: the language model call failed ({reason}).")
-                return None, notes, coverage
-            body = _strip_fences(draft)
-            inspection = inspect_model_draft(body)
+            structured, body, call_failed = self._one_attempt(prompt)
+            if call_failed is not None:
+                notes.append(f"Attempt {attempt + 1}: the language model call failed ({call_failed}).")
+                return None, None, notes, coverage
+            if body is None:
+                notes.append(f"Attempt {attempt + 1}: the model returned nothing usable.")
+                continue
+
+            failures: list[str] = []
+            if structured is not None:
+                failures.extend(structured.structural_report().failures())
+            else:
+                failures.extend(inspect_model_draft(body).failures())
             coverage = checker.check(body, requirements)
-            failures = inspection.failures() + coverage.failures()
-            if inspection.is_specific and not coverage.blocks_acceptance():
-                return body, notes, coverage
+            failures.extend(coverage.failures())
+
+            if not failures:
+                return body, structured, notes, coverage
             notes.append(f"Attempt {attempt + 1} was rejected: " + " ".join(failures))
             feedback = (
                 "Your previous draft was rejected because it is not yet a formulation of this "
                 "problem. Fix all of these:\n" + "\n".join(f"- {item}" for item in failures)
             )
-        return None, notes, coverage
+        return None, None, notes, coverage
+
+    def _one_attempt(self, prompt: str) -> tuple[OptimizationModel | None, str | None, str | None]:
+        """Returns (structured model, document, call failure).
+
+        The structured request is tried first and its failure is not an error:
+        a provider without JSON support, or a model that answers in prose, is
+        handled by asking again for a document.
+        """
+
+        try:
+            payload = self.llm.chat_json(MODEL_SYSTEM_PROMPT, prompt + _STRUCTURED_SUFFIX)
+        except Exception as exc:
+            if isinstance(exc, LLMCallError) and exc.is_permanent:
+                raise
+            payload = None
+        if payload is not None:
+            try:
+                structured = OptimizationModel.model_validate({**payload, "source": "llm_structured"})
+            except ValidationError:
+                structured = None
+            if structured is not None:
+                return structured, structured.render_markdown(), None
+
+        try:
+            draft = self.llm.chat(MODEL_SYSTEM_PROMPT, prompt)
+        except Exception as exc:
+            if isinstance(exc, LLMCallError) and exc.is_permanent:
+                raise
+            return None, None, exc.summary() if isinstance(exc, LLMCallError) else str(exc)
+        return None, _strip_fences(draft), None
 
     @staticmethod
     def _prompt(

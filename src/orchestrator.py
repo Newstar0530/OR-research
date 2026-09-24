@@ -42,7 +42,7 @@ from src.core.metric_registry import build_metric_registry
 from src.core.problem_schema import ResearchArtifactManifest, ResearchProblem, infer_problem_family
 from src.core.requirement_coverage import coverage_markdown
 from src.core.research_protocol import default_or_protocol
-from src.core.model_ir import write_model_ir
+from src.core.model_ir import build_model_ir, write_model_ir
 from src.core.model_exporter import export_model_skeletons
 from src.core.solver_adapter import detect_solver_tools, recommended_tools_for_profile
 from src.domain_profiles import load_domain_profile, render_profile_markdown
@@ -321,9 +321,16 @@ class ResearchOrchestrator:
         provenance.record(
             "mathematical_modeling",
             model_source,
-            "A language model wrote the formulation, and it passed the same inspection the"
-            " critique applies: no scaffold placeholders, all sections present, real"
-            " mathematics, and a chosen objective direction."
+            (
+                "A language model declared the formulation as typed fields: every variable has a"
+                " domain, every constraint an expression, and `model_draft.md` is rendered from"
+                " those fields rather than written alongside them."
+                if model.model is not None
+                else "A language model wrote the formulation as prose and it passed inspection:"
+                " no scaffold placeholders, all sections present, real mathematics, and a chosen"
+                " objective direction. Units, bounds and requirement links exist only where the"
+                " prose happened to state them."
+            )
             if model_source == "llm"
             else "`model_draft.md` is the generic scaffold with this run's goal interpolated into"
             " it. No model formulated this problem; see `model_critique.md` for which elements"
@@ -335,7 +342,11 @@ class ResearchOrchestrator:
         )
         self._mark("mathematical_modeling")
         (run_dir / "model_draft.md").write_text(model.markdown, encoding="utf-8")
-        model_ir = write_model_ir(model.markdown, run_dir, self.config.project_name)
+        # A formulation that came back as fields is used as it was declared.
+        # One that only ever existed as prose is scraped back out of it, which
+        # recovers far less -- and says so in its own provenance.
+        model_ir = model.model or build_model_ir(model.markdown, self.config.project_name)
+        write_model_ir(model_ir, run_dir)
         export_model_skeletons(model_ir, run_dir)
 
         provenance.record(
