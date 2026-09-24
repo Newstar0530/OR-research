@@ -40,6 +40,8 @@ from src.core.search_policy import SearchPolicyConfig
 from src.core.method_registry import build_method_registry
 from src.core.metric_registry import build_metric_registry
 from src.core.problem_schema import ResearchArtifactManifest, ResearchProblem, infer_problem_family
+from src.core.ir_compiler import compile_to_mip
+from src.core.mixed_integer_program import solve_mip, verify_mip_solution
 from src.core.requirement_coverage import coverage_markdown
 from src.core.research_protocol import default_or_protocol
 from src.core.model_ir import build_model_ir, write_model_ir
@@ -86,6 +88,7 @@ class ResearchOrchestrator:
         "requirement_extraction",
         "mathematical_modeling",
         "requirement_coverage",
+        "model_compilation",
         "model_critique",
         "algorithm_proposal",
         "experiment_implementation",
@@ -362,6 +365,31 @@ class ResearchOrchestrator:
         self._mark("requirement_coverage")
         write_json(run_dir / "requirement_coverage.json", coverage.model_dump())
         (run_dir / "requirement_coverage.md").write_text(coverage_markdown(coverage), encoding="utf-8")
+
+        # The one place the research pipeline reaches the verified solver path.
+        # A formulation that compiles is solved, re-substituted into its own
+        # constraints and cross-checked; one that does not says what is missing.
+        compilation = compile_to_mip(model_ir)
+        provenance.record(
+            "model_compilation",
+            "derived" if compilation.compiled else "not_generated",
+            f"The formulation compiled into an executable model with {compilation.mip.n_vars}"
+            f" variables and {compilation.mip.n_constraints} constraints, and was solved and"
+            " verified."
+            if compilation.compiled and compilation.mip is not None
+            else "The formulation did not compile; `model_compile_report.md` lists what each"
+            " refusal needs.",
+            inputs_used=["model_ir"],
+            missing=[] if compilation.compiled else [item.reason for item in compilation.refusals][:3],
+        )
+        self._mark("model_compilation")
+        write_json(
+            run_dir / "model_compile_report.json", compilation.model_dump(exclude={"mip"})
+        )
+        (run_dir / "model_compile_report.md").write_text(compilation.markdown(), encoding="utf-8")
+        if compilation.mip is not None:
+            write_json(run_dir / "model_mip.json", compilation.mip.model_dump())
+            self._solve_compiled_model(compilation.mip, run_dir)
 
         critique, critique_source = CriticAgent(self.llm).run(model.markdown, coverage)
         provenance.record(
@@ -719,6 +747,61 @@ class ResearchOrchestrator:
 ## Revision Suggestions
 {chr(10).join(f"- {s}" for s in report.revision_suggestions)}
 """
+
+    def _solve_compiled_model(self, mip, run_dir: Path) -> None:
+        """Solve the compiled formulation and record the independent check.
+
+        The recorded objective is the one recomputed from the returned vector,
+        not the one the solver printed, and a solver that disagrees with the
+        cross-check is reported rather than reconciled.
+        """
+
+        solution = solve_mip(mip, time_limit=float(self.config.solver_timeout_seconds))
+        verification = (
+            verify_mip_solution(mip, solution.values) if solution.has_solution else None
+        )
+        write_json(
+            run_dir / "model_solution.json",
+            {
+                "status": solution.status,
+                "backend": solution.backend,
+                "runtime_seconds": solution.runtime_seconds,
+                "reported_objective": solution.objective,
+                "recomputed_objective": verification.recomputed_objective if verification else None,
+                "feasible": verification.feasible if verification else None,
+                "max_violation": verification.max_violation if verification else None,
+                "values": dict(zip([v.name for v in mip.variables], solution.values)),
+                "notes": solution.notes,
+            },
+        )
+        lines = [
+            "# Solved From The Formulation",
+            "",
+            "This is the model declared in `model_ir.json`, compiled and solved -- not a",
+            "template with its own numbers.",
+            "",
+            f"- status: {solution.status}",
+            f"- backend: {solution.backend}",
+        ]
+        if verification is not None:
+            lines.extend(
+                [
+                    f"- objective as recomputed from the returned solution: "
+                    f"{verification.recomputed_objective}",
+                    f"- feasible when substituted back into every constraint: {verification.feasible}",
+                    f"- largest constraint violation: {verification.max_violation:.6g}",
+                    "",
+                    "## Solution",
+                    "",
+                ]
+            )
+            lines.extend(
+                f"- `{variable.name}` = {value:g}"
+                for variable, value in zip(mip.variables, solution.values)
+            )
+        if solution.notes:
+            lines.extend(["", "## Solver Notes", "", f"- {solution.notes}"])
+        (run_dir / "model_solution.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     @staticmethod
     def _critique_markdown(c) -> str:

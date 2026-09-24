@@ -66,6 +66,8 @@ class ResearchArtifactManifest(BaseModel):
             "model_export_pyomo.py",
             "model_export_ortools.py",
             "model_export_diagnostics.md",
+            "model_compile_report.json",
+            "model_compile_report.md",
             "model_critique.md",
             "algorithm_plan.md",
             "generated_experiment.py",

@@ -54,6 +54,10 @@ class ParameterSpec(BaseModel):
     #: The requirement or data source that fixes this value, so a reader can
     #: ask where a number came from rather than trusting it.
     source: str | None = None
+    #: The number, when the formulation states one. A parameter left symbolic
+    #: is not a defect -- most are -- but a constraint using it cannot be
+    #: compiled until an instance supplies it.
+    value: float | None = None
     indexed_by: list[str] = Field(default_factory=list)
 
 
